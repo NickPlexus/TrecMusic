@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Твоя основная тема. Compose сам рисует цвета, тут главное убрать ActionBar -->
+    <style name="Theme.TrecMusic" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Делаем бары прозрачными сразу, чтобы не "моргали" цветом при запуске -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!-- Тема Сплеша -->
+    <style name="Theme.App.Starting" parent="Theme.SplashScreen">
+        <!-- 1. ФОН: Ставим сплошной яркий красный (градиент сюда нельзя) -->
+        <item name="windowSplashScreenBackground">#fc0402</item>
+
+        <!-- 2. ЛОГОТИП: Ссылка на твой файл БЕЗ ФОНА (только буквы) -->
+        <!-- Важно: файл должен быть splash_logo_transparent -->
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_logo_transparent</item>
+
+        <!-- Это убирает кружок "вокруг" иконки, если сама иконка меньше границ -->
+        <!-- Но Android 12 все равно режет маской, поэтому важно, чтобы фон был прозрачным -->
+        <item name="windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+
+        <item name="postSplashScreenTheme">@style/Theme.TrecMusic</item>
+    </style>
+</resources>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!--
+        Разрешаем доступ к папке, куда RecorderViewModel сохраняет записи.
+        name: внутреннее имя для URI
+        path: подпапка внутри getExternalFilesDir()
+    -->
+    <external-files-path name="my_recordings" path="Music/TrecRecordings" />
+
+    <!-- На всякий случай разрешаем доступ к кэшу (для временных файлов vocal remover) -->
+    <cache-path name="cache_files" path="." />
+</paths>

@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Trec Music</string>
+    <string name="notification_channel_playback">TREC Playback</string>
+</resources>

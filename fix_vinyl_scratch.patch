@@ -1,0 +1,16 @@
+--- a/app/src/main/java/com/trec/music/viewmodel/MusicViewModel.kt
++++ b/app/src/main/java/com/trec/music/viewmodel/MusicViewModel.kt
+@@ -539,8 +539,14 @@
+             } else {
+                 // Движение вперед
+                 if (isReversing) switchPlayerSource(toReverse = false)
++                
++                // Добавляем перемотку вперёд, как для движения назад
++                val seekDelta = (targetSpeed * 50).toLong()
++                val newPos = (currentPosition + seekDelta).coerceAtMost(duration)
++                currentPosition = newPos
++                player.seekTo(newPos)
++                
+                 setScratchParameters(targetSpeed)
+             }
+         }

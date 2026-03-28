@@ -4,7 +4,12 @@
 
 package com.trec.music.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -34,12 +39,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.trec.music.PrefsManager
 import com.trec.music.ui.components.GlassButton
 import com.trec.music.ui.components.GlassDialog
 import com.trec.music.ui.components.GlassTextButton
+import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.ui.theme.TrecRed
-import com.trec.music.utils.DebugLogger
 import com.trec.music.viewmodel.MusicViewModel
 import androidx.navigation.NavController
 import java.util.Locale
@@ -48,17 +54,33 @@ import kotlin.math.abs
 @Composable
 fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
     val context = LocalContext.current
+    val bottomOverlay = LocalBottomOverlayPadding.current
     var showResetConfirmation by remember { mutableStateOf(false) }
     var showSleepTimerDialog by remember { mutableStateOf(false) }
     var showAppInfoDialog by remember { mutableStateOf(false) }
+    var showClearCacheDialog by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            viewModel.isRecorderFeatureEnabled = true
+            Toast.makeText(context, "Диктофон включен", Toast.LENGTH_SHORT).show()
+        } else {
+            viewModel.isRecorderFeatureEnabled = false
+            Toast.makeText(context, "Для диктофона нужно разрешение микрофона", Toast.LENGTH_LONG).show()
+        }
+    }
 
     val availableColors = listOf(
         TrecRed, Color(0xFFE91E63), Color(0xFF9C27B0), Color(0xFF673AB7),
         Color(0xFF3F51B5), Color(0xFF2196F3), Color(0xFF00BCD4), Color(0xFF009688),
         Color(0xFF4CAF50), Color(0xFFFFC107), Color(0xFFFF9800), Color(0xFFFF5722)
     )
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshAppCacheSize(context)
+    }
 
     if (showResetConfirmation) {
         GlassDialog(onDismiss = { showResetConfirmation = false }) {
@@ -81,7 +103,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
                         viewModel.refreshPlaylists()
                         Toast.makeText(context, "Сброшено", Toast.LENGTH_SHORT).show()
                         showResetConfirmation = false
-                    }, TrecRed, Modifier.weight(1f))
+                    }, MaterialTheme.colorScheme.primary, Modifier.weight(1f))
                 }
             }
         }
@@ -124,6 +146,31 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
         }
     }
 
+    if (showClearCacheDialog) {
+        GlassDialog(onDismiss = { showClearCacheDialog = false }) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Очистить кэш приложения?", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Удалится кэш обложек и кэш обработки. Это безопасно: при необходимости всё будет пересчитано/загружено заново.",
+                    color = Color.Gray,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+                Spacer(Modifier.height(24.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    GlassTextButton("Отмена") { showClearCacheDialog = false }
+                    GlassButton("Очистить", {
+                        viewModel.clearAppCache(context)
+                        Toast.makeText(context, "Кэш очищен", Toast.LENGTH_SHORT).show()
+                        showClearCacheDialog = false
+                    }, MaterialTheme.colorScheme.primary, Modifier.weight(1f))
+                }
+            }
+        }
+    }
+
     if (showAppInfoDialog) {
         GlassDialog(onDismiss = { showAppInfoDialog = false }) {
             Column(
@@ -148,7 +195,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
                 Text("• Тексты песен (online)", color = Color.LightGray, fontSize = 13.sp)
                 Text("• Радио и диктофон (опционально)", color = Color.LightGray, fontSize = 13.sp)
                 Spacer(Modifier.height(20.dp))
-                GlassButton("Закрыть", { showAppInfoDialog = false }, TrecRed, Modifier.fillMaxWidth())
+                GlassButton("Закрыть", { showAppInfoDialog = false }, MaterialTheme.colorScheme.primary, Modifier.fillMaxWidth())
             }
         }
     }
@@ -157,6 +204,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             .fillMaxSize()
             .padding(horizontal = 16.dp)
             .verticalScroll(scrollState)
+            .padding(bottom = bottomOverlay + 24.dp)
     ) {
         Spacer(Modifier.height(60.dp))
 
@@ -249,8 +297,36 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
         // ==========================================
         SectionHeader("Функции")
 
-        SettingsToggle("Диктофон (Студия)", "Вкладка записи", Icons.Rounded.Mic, viewModel.isRecorderFeatureEnabled, { viewModel.isRecorderFeatureEnabled = it }, viewModel.dominantColor)
-        SettingsToggle("Радио", "Интернет-радио", Icons.Rounded.Radio, viewModel.isRadioEnabled, { viewModel.isRadioEnabled = it }, viewModel.dominantColor)
+        SettingsToggle(
+            "Диктофон (Студия)",
+            "Вкладка записи (по умолчанию выключена)",
+            Icons.Rounded.Mic,
+            viewModel.isRecorderFeatureEnabled,
+            { enable ->
+                if (!enable) {
+                    viewModel.isRecorderFeatureEnabled = false
+                } else {
+                    val granted =
+                        Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                    if (granted) {
+                        viewModel.isRecorderFeatureEnabled = true
+                    } else {
+                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
+            },
+            viewModel.dominantColor
+        )
+
+        SettingsToggle(
+            "Радио",
+            "Интернет-радио (бета, по умолчанию выключено)",
+            Icons.Rounded.Radio,
+            viewModel.isRadioEnabled,
+            { viewModel.isRadioEnabled = it },
+            viewModel.dominantColor
+        )
 
         SettingsToggle(
             "DSP Эффекты",
@@ -296,7 +372,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
 
         // Crossfade Slider
         SettingsSlider(
-            title = "Crossfade",
+            title = "Кроссфейд",
             value = viewModel.crossfadeMs.toFloat(),
             range = 0f..12000f,
             onValueChange = { viewModel.crossfadeMs = it.toInt() },
@@ -310,7 +386,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             value = viewModel.audioBalance,
             range = -1f..1f,
             onValueChange = { viewModel.audioBalance = it },
-            label = if (abs(viewModel.audioBalance) < 0.1f) "Центр" else if (viewModel.audioBalance < 0) "Left" else "Right",
+            label = if (abs(viewModel.audioBalance) < 0.1f) "Центр" else if (viewModel.audioBalance < 0) "Лево" else "Право",
             activeColor = viewModel.dominantColor
         )
 
@@ -334,15 +410,15 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
         }
 
         SettingsToggle(
-            "Shake to Skip",
             "Встряхнуть для переключения",
+            "Встряхните телефон, чтобы переключить трек",
             Icons.Rounded.Vibration,
             viewModel.isShakeEnabled,
             { viewModel.toggleShake() },
             viewModel.dominantColor
         )
 
-        // Cache Management
+        // Cache Management (обложки + обработка)
         Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -350,11 +426,13 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             Icon(Icons.Rounded.DeleteSweep, null, tint = Color.Gray)
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
-                Text("Кэш обработки", color = Color.White, fontSize = 16.sp)
-                Text(if (viewModel.reverseCacheSize == "0 MB") "Чисто" else viewModel.reverseCacheSize, color = Color.Gray, fontSize = 12.sp)
+                Text("Кэш", color = Color.White, fontSize = 16.sp)
+                Text(if (viewModel.appCacheSize == "0 MB") "Чисто" else viewModel.appCacheSize, color = Color.Gray, fontSize = 12.sp)
             }
-            if (viewModel.reverseCacheSize != "0 MB") {
-                TextButton(onClick = { viewModel.clearReverseCache(context) }) { Text("Очистить", color = TrecRed) }
+            if (viewModel.appCacheSize != "0 MB") {
+                TextButton(onClick = { showClearCacheDialog = true }) {
+                    Text("Очистить", color = MaterialTheme.colorScheme.primary)
+                }
             }
         }
 
@@ -375,9 +453,6 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
 
         // --- FOOTER ---
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            TextButton(onClick = { DebugLogger.isVisible = !DebugLogger.isVisible }) {
-                Text(if (DebugLogger.isVisible) "Скрыть консоль" else "Режим отладки", color = Color.DarkGray, fontSize = 12.sp)
-            }
             Text("TREC Music v1.0.0", color = Color.DarkGray, fontSize = 12.sp)
             Spacer(Modifier.height(32.dp))
         }
@@ -390,7 +465,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
 fun SectionHeader(title: String) {
     Text(
         text = title.uppercase(),
-        color = TrecRed,
+        color = MaterialTheme.colorScheme.primary,
         fontSize = 12.sp,
         fontWeight = FontWeight.Bold,
         letterSpacing = 1.sp,

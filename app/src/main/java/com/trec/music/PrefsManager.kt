@@ -21,6 +21,10 @@ import androidx.core.content.edit
 import com.trec.music.data.TrecTrackEnhanced
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.security.MessageDigest
 
 class PrefsManager(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("trec_prefs", Context.MODE_PRIVATE)
@@ -41,6 +45,165 @@ class PrefsManager(context: Context) {
 
     fun getFavorites(): MutableSet<String> {
         return prefs.getStringSet("fav_tracks", emptySet())?.toMutableSet() ?: mutableSetOf()
+    }
+
+    // ==========================================
+    // COVER CACHE (URL + Color)
+    // ==========================================
+
+    private fun shortSha256Hex(input: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
+        val sb = StringBuilder(16)
+        for (i in 0 until 8) sb.append(String.format(Locale.US, "%02x", bytes[i]))
+        return sb.toString()
+    }
+
+    fun getCachedCoverUrl(cacheKey: String): String? {
+        val h = shortSha256Hex(cacheKey)
+        return prefs.getString("cover_url_$h", null)
+    }
+
+    fun saveCachedCoverUrl(cacheKey: String, url: String) {
+        val h = shortSha256Hex(cacheKey)
+        val keySet = prefs.getStringSet("cover_cache_keys", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (!keySet.contains(h)) keySet.add(h)
+        prefs.edit {
+            putStringSet("cover_cache_keys", keySet)
+            putString("cover_url_$h", url)
+        }
+    }
+
+    fun getCachedCoverColorArgb(cacheKey: String): Int? {
+        val h = shortSha256Hex(cacheKey)
+        val k = "cover_color_$h"
+        return if (prefs.contains(k)) prefs.getInt(k, 0) else null
+    }
+
+    fun saveCachedCoverColorArgb(cacheKey: String, argb: Int) {
+        val h = shortSha256Hex(cacheKey)
+        val keySet = prefs.getStringSet("cover_cache_keys", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (!keySet.contains(h)) keySet.add(h)
+        prefs.edit {
+            putStringSet("cover_cache_keys", keySet)
+            putInt("cover_color_$h", argb)
+        }
+    }
+
+    fun clearCoverCache() {
+        val keySet = prefs.getStringSet("cover_cache_keys", emptySet())?.toSet() ?: emptySet()
+        prefs.edit {
+            keySet.forEach { h ->
+                remove("cover_url_$h")
+                remove("cover_color_$h")
+            }
+            remove("cover_cache_keys")
+        }
+    }
+
+    // ==========================================
+    // MOST PLAYED (Per-track counter)
+    // ==========================================
+
+    fun incrementTrackPlayCount(uri: String) {
+        if (uri.isBlank()) return
+        val h = shortSha256Hex(uri)
+        val keys = prefs.getStringSet("playcount_keys", emptySet())?.toMutableSet() ?: mutableSetOf()
+        if (!keys.contains(h)) keys.add(h)
+
+        val cntKey = "playcount_cnt_$h"
+        val next = prefs.getInt(cntKey, 0) + 1
+        prefs.edit {
+            putStringSet("playcount_keys", keys)
+            putString("playcount_uri_$h", uri)
+            putInt(cntKey, next)
+        }
+    }
+
+    fun getTopPlayedUris(limit: Int): List<Pair<String, Int>> {
+        val keys = prefs.getStringSet("playcount_keys", emptySet())?.toSet() ?: emptySet()
+        if (keys.isEmpty() || limit <= 0) return emptyList()
+
+        val list = ArrayList<Pair<String, Int>>(keys.size)
+        keys.forEach { h ->
+            val uri = prefs.getString("playcount_uri_$h", null) ?: return@forEach
+            val cnt = prefs.getInt("playcount_cnt_$h", 0)
+            if (cnt > 0) list.add(uri to cnt)
+        }
+
+        list.sortByDescending { it.second }
+        return if (list.size > limit) list.subList(0, limit) else list
+    }
+
+    // ==========================================
+    // USAGE STATS (Listening)
+    // ==========================================
+
+    private fun listenDayKey(): String {
+        return SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
+    }
+
+    private fun ensureListenDay() {
+        val today = listenDayKey()
+        val stored = prefs.getString("listen_day_key", null)
+        if (stored == today) return
+        prefs.edit {
+            putString("listen_day_key", today)
+            putLong("listen_today_ms", 0L)
+            putInt("listen_today_sessions", 0)
+            putInt("listen_today_tracks", 0)
+        }
+    }
+
+    fun addListeningTime(ms: Long) {
+        if (ms <= 0) return
+        ensureListenDay()
+        val total = prefs.getLong("listen_total_ms", 0L) + ms
+        val today = prefs.getLong("listen_today_ms", 0L) + ms
+        prefs.edit {
+            putLong("listen_total_ms", total)
+            putLong("listen_today_ms", today)
+        }
+    }
+
+    fun incrementListenSession() {
+        ensureListenDay()
+        val total = prefs.getInt("listen_total_sessions", 0) + 1
+        val today = prefs.getInt("listen_today_sessions", 0) + 1
+        prefs.edit {
+            putInt("listen_total_sessions", total)
+            putInt("listen_today_sessions", today)
+        }
+    }
+
+    fun incrementTracksStarted() {
+        ensureListenDay()
+        val total = prefs.getInt("listen_total_tracks", 0) + 1
+        val today = prefs.getInt("listen_today_tracks", 0) + 1
+        prefs.edit {
+            putInt("listen_total_tracks", total)
+            putInt("listen_today_tracks", today)
+        }
+    }
+
+    fun getTotalListeningMs(): Long = prefs.getLong("listen_total_ms", 0L)
+
+    fun getTodayListeningMs(): Long {
+        ensureListenDay()
+        return prefs.getLong("listen_today_ms", 0L)
+    }
+
+    fun getTotalListenSessions(): Int = prefs.getInt("listen_total_sessions", 0)
+
+    fun getTodayListenSessions(): Int {
+        ensureListenDay()
+        return prefs.getInt("listen_today_sessions", 0)
+    }
+
+    fun getTotalTracksStarted(): Int = prefs.getInt("listen_total_tracks", 0)
+
+    fun getTodayTracksStarted(): Int {
+        ensureListenDay()
+        return prefs.getInt("listen_today_tracks", 0)
     }
 
     // ==========================================
@@ -93,7 +256,7 @@ class PrefsManager(context: Context) {
         prefs.edit { putBoolean("feat_recorder", enabled) }
     }
 
-    fun getRecorderFeatureEnabled(): Boolean = prefs.getBoolean("feat_recorder", true)
+    fun getRecorderFeatureEnabled(): Boolean = prefs.getBoolean("feat_recorder", false)
 
     // 2. Radio
     fun saveRadioFeatureEnabled(enabled: Boolean) {
@@ -254,11 +417,53 @@ class PrefsManager(context: Context) {
         return prefs.getStringSet("playlist_names", emptySet())?.toMutableSet() ?: mutableSetOf()
     }
 
+    private fun readPlaylistOrder(): MutableList<String> {
+        val raw = prefs.getString("playlist_order_json", null) ?: return mutableListOf()
+        return try {
+            val arr = JSONArray(raw)
+            val result = ArrayList<String>(arr.length())
+            for (i in 0 until arr.length()) {
+                val name = arr.optString(i, "").trim()
+                if (name.isNotBlank()) result.add(name)
+            }
+            result
+        } catch (_: Exception) {
+            mutableListOf()
+        }
+    }
+
+    fun getPlaylistOrder(): List<String> {
+        val order = readPlaylistOrder()
+        if (order.isNotEmpty()) return order
+        return getPlaylistNames().toList().sortedBy { it.lowercase() }
+    }
+
+    fun savePlaylistOrder(order: List<String>) {
+        val arr = JSONArray()
+        order.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .forEach { arr.put(it) }
+        prefs.edit { putString("playlist_order_json", arr.toString()) }
+    }
+
     fun createPlaylist(name: String) {
         val names = getPlaylistNames()
         if (!names.contains(name)) {
             names.add(name)
             prefs.edit { putStringSet("playlist_names", names) }
+        }
+
+        val order = readPlaylistOrder()
+        if (order.isNotEmpty()) {
+            if (!order.contains(name)) {
+                order.add(name)
+                savePlaylistOrder(order)
+            }
+        } else {
+            // If order wasn't stored yet, initialize it in stable (alphabetical) order.
+            savePlaylistOrder(names.toList().sortedBy { it.lowercase() })
         }
     }
 
@@ -270,13 +475,38 @@ class PrefsManager(context: Context) {
             remove("pl_json_$name")
             remove("pl_$name")
         }
+
+        val order = readPlaylistOrder()
+        if (order.remove(name)) savePlaylistOrder(order)
     }
 
     fun renamePlaylist(oldName: String, newName: String) {
+        if (oldName == newName) return
+        val names = getPlaylistNames()
+        if (!names.contains(oldName)) {
+            createPlaylist(newName)
+            return
+        }
+
         val tracks = getTracksInPlaylist(oldName)
-        deletePlaylist(oldName)
-        createPlaylist(newName)
+        names.remove(oldName)
+        names.add(newName)
+        prefs.edit {
+            putStringSet("playlist_names", names)
+            remove("pl_json_$oldName")
+            remove("pl_$oldName")
+        }
         saveTracksToPlaylist(newName, tracks)
+
+        val order = readPlaylistOrder()
+        if (order.isNotEmpty()) {
+            val idx = order.indexOf(oldName)
+            if (idx >= 0) order[idx] = newName
+            else order.add(newName)
+            savePlaylistOrder(order)
+        } else {
+            savePlaylistOrder(names.toList().sortedBy { it.lowercase() })
+        }
     }
 
     fun addTrackToPlaylist(playlistName: String, uri: String) {

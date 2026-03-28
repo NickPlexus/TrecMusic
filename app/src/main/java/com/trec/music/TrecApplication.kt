@@ -19,12 +19,20 @@ package com.trec.music
 import android.app.Application
 import coil.ImageLoader
 import coil.ImageLoaderFactory
+import coil.disk.DiskCache
 import com.trec.music.utils.AudioCoverFetcher // Убедись, что файл лежит здесь
 
 class TrecApplication : Application(), ImageLoaderFactory {
 
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
+            // Дисковый кэш: ускоряет повторные загрузки (и онлайн-обложек, и embedded)
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(cacheDir.resolve("image_cache"))
+                    .maxSizeBytes(150L * 1024L * 1024L) // 150 MB
+                    .build()
+            }
             // Добавляем наш кастомный Fetcher для аудио-обложек
             .components {
                 add(AudioCoverFetcher.Factory())

@@ -35,12 +35,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trec.music.ui.components.TrackRow
-import com.trec.music.ui.theme.TrecRed
+import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.viewmodel.MusicViewModel
 
 @Composable
 fun FavoritesScreen(viewModel: MusicViewModel) {
     val scrollState = rememberLazyListState()
+    val bottomOverlay = LocalBottomOverlayPadding.current
 
     // Умная фильтрация
     val favTracks by remember(viewModel.playlist, viewModel.favoriteTracks) {
@@ -74,7 +75,7 @@ fun FavoritesScreen(viewModel: MusicViewModel) {
         } else {
             LazyColumn(
                 state = scrollState,
-                contentPadding = PaddingValues(bottom = 120.dp),
+                contentPadding = PaddingValues(bottom = bottomOverlay + 24.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
                 // --- HEADER ---
@@ -100,7 +101,7 @@ fun FavoritesScreen(viewModel: MusicViewModel) {
                             Box(
                                 modifier = Modifier.fillMaxSize().background(
                                     Brush.linearGradient(
-                                        listOf(TrecRed, animatedColor)
+                                        listOf(MaterialTheme.colorScheme.primary, animatedColor)
                                     )
                                 ),
                                 contentAlignment = Alignment.Center
@@ -142,7 +143,7 @@ fun FavoritesScreen(viewModel: MusicViewModel) {
                                     }
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = TrecRed),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                             contentPadding = PaddingValues(horizontal = 32.dp, vertical = 16.dp),
                             modifier = Modifier.height(56.dp)
                         ) {

@@ -52,6 +52,10 @@ class LibraryRepository(private val context: Context) {
 
     fun getPlaylistNames(): Set<String> = prefs.getPlaylistNames()
 
+    fun getPlaylistOrder(): List<String> = prefs.getPlaylistOrder()
+
+    fun savePlaylistOrder(order: List<String>) = prefs.savePlaylistOrder(order)
+
     fun createPlaylist(name: String) = prefs.createPlaylist(name)
 
     fun deletePlaylist(name: String) = prefs.deletePlaylist(name)

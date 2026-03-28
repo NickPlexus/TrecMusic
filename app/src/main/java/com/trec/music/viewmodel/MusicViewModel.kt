@@ -2,15 +2,21 @@
 
 package com.trec.music.viewmodel
 
+import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
 import android.media.audiofx.AudioEffect
 import android.media.audiofx.Equalizer
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.compose.runtime.*
@@ -21,6 +27,7 @@ import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -28,6 +35,10 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
+import androidx.palette.graphics.Palette
+import coil.annotation.ExperimentalCoilApi
+import coil.imageLoader
+import coil.request.ImageRequest
 import com.trec.music.PlaybackService
 import com.trec.music.PlaybackCoordinator
 import com.trec.music.PrefsManager
@@ -36,8 +47,14 @@ import com.trec.music.data.LyricsRepository
 import com.trec.music.data.TrecTrackEnhanced
 import com.trec.music.data.api.CoverArtService
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.random.Random
 
 @OptIn(UnstableApi::class)
@@ -71,7 +88,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     var hasEmbeddedArtwork by mutableStateOf(false)
 
     private val coverArtService = CoverArtService()
-    private val coverCache = mutableMapOf<String, String>()
+    private val coverUrlCache = mutableStateMapOf<String, String>()
+    private val coverColorCache = mutableStateMapOf<String, Color>()
+    // ФИКС КРАША: ConcurrentHashMap безопасен для многопоточного добавления/удаления (Main Thread + Dispatchers.IO)
+    private val coverFetchJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val coverFetchLimiter = Semaphore(4)
 
     // --- LYRICS STATE ---
     var currentLyrics by mutableStateOf<String?>(null)
@@ -120,7 +141,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // ==========================================
 
     // Recorder
-    private val _isRecorderFeatureEnabled = mutableStateOf(true)
+    private val _isRecorderFeatureEnabled = mutableStateOf(false)
     var isRecorderFeatureEnabled: Boolean
         get() = _isRecorderFeatureEnabled.value
         set(value) {
@@ -206,6 +227,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             prefs.saveCrossfade(value)
         }
 
+    // Время начала fade-in (для кроссфейда) в elapsedRealtime, -1 = не активно.
+    @Volatile private var crossfadeFadeInStartElapsed: Long = -1L
+
     private val _monoAudio = mutableStateOf(false)
     var monoAudio: Boolean
         get() = _monoAudio.value
@@ -247,6 +271,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // Sleep Timer
     var sleepTimerRemainingFormatted by mutableStateOf<String?>(null)
     private var sleepTimerJob: Job? = null
+    @Volatile private var sleepVolumeFactor: Float = 1f
 
     // --- STATE: LOGIC ---
     var isErrorState by mutableStateOf(false)
@@ -280,6 +305,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     var isInstrumentalReady by mutableStateOf(false)
     var instrumentalTrackPath by mutableStateOf<String?>(null)
     var reverseCacheSize by mutableStateOf("0 MB")
+    var appCacheSize by mutableStateOf("0 MB")
 
     // Internal DSP State
     var normalTrackUri: Uri? = null
@@ -401,6 +427,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     dspHandler.calculateCacheSize(app)
+                    refreshAppCacheSize(app)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -434,6 +461,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun removeTrackFromPlaylist(name: String, uri: String) = libraryHandler.removeTrackFromPlaylist(name, uri)
     fun moveTrackInPlaylist(playlistName: String, fromIndex: Int, toIndex: Int) = libraryHandler.moveTrackInPlaylist(playlistName, fromIndex, toIndex)
     fun movePlaylist(fromIndex: Int, toIndex: Int) = libraryHandler.movePlaylist(fromIndex, toIndex)
+    fun persistPlaylistOrder() = libraryHandler.persistPlaylistOrder()
     fun getPlaylistTracks(name: String) = libraryHandler.getPlaylistTracks(name)
     fun deleteFileFromDevice(context: Context, track: TrecTrackEnhanced) = libraryHandler.deleteFileFromDevice(context, track)
     fun refreshLibrary(context: Context) = libraryHandler.refreshLibrary(context)
@@ -487,13 +515,14 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (remaining < 30_000) {
                     val volume = (remaining.toFloat() / 30_000f).coerceIn(0f, 1f)
-                    player?.volume = volume
+                    sleepVolumeFactor = volume
                 }
 
                 delay(1000)
             }
 
             player?.pause()
+            sleepVolumeFactor = 1.0f
             player?.volume = 1.0f // comment normalized
             sleepTimerRemainingFormatted = null
         }
@@ -502,6 +531,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelSleepTimer() {
         sleepTimerJob?.cancel()
         sleepTimerRemainingFormatted = null
+        sleepVolumeFactor = 1.0f
         player?.volume = 1.0f
     }
 
@@ -775,8 +805,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     if (!title.isNullOrBlank()) currentTrackTitle = title
                     currentTrackArtist = artist
                     currentTrackAlbum = album
+
+                    // ФИКС КРАША: Запрос обложки обращается к ExoPlayer.
+                    // Это СТРОГО нужно делать в Main Thread!
+                    refreshCoverArt(artist, currentTrackTitle, album)
                 }
-                refreshCoverArt(artist, title ?: currentTrackTitle, album)
             } catch (_: Exception) {
             } finally {
                 try { retriever.release() } catch (_: Exception) {}
@@ -841,27 +874,347 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
     
     fun refreshCoverArt(artist: String?, title: String?, album: String?) {
-        if (hasEmbeddedArtwork) return
+        ensureCoverArt(
+            artist = artist,
+            title = title,
+            album = album,
+            activeUri = currentTrackUri?.toString()
+        )
+    }
+
+    fun getCoverUrlForTrack(track: TrecTrackEnhanced): String? {
+        val key = coverCacheKey(track.artist, track.title, track.album)
+        return coverUrlCache[key]
+    }
+
+    fun ensureCoverForTrack(track: TrecTrackEnhanced) {
+        ensureCoverArt(
+            artist = track.artist,
+            title = track.title,
+            album = track.album,
+            activeUri = null
+        )
+    }
+
+    @kotlin.OptIn(ExperimentalCoilApi::class)
+    fun clearCoverCache(context: Context) {
+        prefs.clearCoverCache()
+        coverUrlCache.clear()
+        coverColorCache.clear()
+        if (!hasEmbeddedArtwork) currentCoverUrl = null
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val loader = context.imageLoader
+                loader.memoryCache?.clear()
+                loader.diskCache?.clear()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    fun refreshAppCacheSize(context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val bytes = try { computeAppCacheBytes(context) } catch (_: Exception) { 0L }
+            val formatted = formatBytes(bytes)
+            withContext(Dispatchers.Main) { appCacheSize = formatted }
+        }
+    }
+
+    fun clearAppCache(context: Context) {
+        // Обложки (Coil + prefs)
+        clearCoverCache(context)
+
+        // DSP/обработка (rev_/inst_ + сброс состояний)
+        clearReverseCache(context)
+
+        // На всякий случай убираем "временные" raw-файлы, которые могли остаться после обработки
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                context.cacheDir
+                    .listFiles { _, name ->
+                        (name.startsWith("temp_decode_") && name.endsWith(".raw")) ||
+                            (name.startsWith("vr_") && name.endsWith(".raw"))
+                    }
+                    ?.forEach { it.delete() }
+            } catch (_: Exception) {
+            }
+            withContext(Dispatchers.Main) {
+                refreshAppCacheSize(context)
+            }
+        }
+    }
+
+    private fun computeAppCacheBytes(context: Context): Long {
+        val cacheDir = context.cacheDir
+
+        // 1) DSP / обработка
+        val processingBytes = try {
+            cacheDir.listFiles { _, name ->
+                ((name.startsWith("rev_") || name.startsWith("inst_")) && name.endsWith(".wav")) ||
+                    (name.startsWith("temp_decode_") && name.endsWith(".raw")) ||
+                    (name.startsWith("vr_") && name.endsWith(".raw"))
+            }?.sumOf { it.length() } ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+
+        // 2) Обложки (Coil disk cache)
+        val coverDiskBytes = try {
+            dirBytes(cacheDir.resolve("image_cache"))
+        } catch (_: Exception) {
+            0L
+        }
+
+        return processingBytes + coverDiskBytes
+    }
+
+    private fun dirBytes(dir: File): Long {
+        if (!dir.exists()) return 0L
+        if (dir.isFile) return dir.length()
+        val children = dir.listFiles() ?: return 0L
+        var total = 0L
+        for (c in children) {
+            total += if (c.isDirectory) dirBytes(c) else c.length()
+        }
+        return total
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes <= 0L) return "0 MB"
+        val kb = 1024.0
+        val mb = kb * 1024.0
+        val gb = mb * 1024.0
+        return when {
+            bytes >= gb -> String.format(Locale.US, "%.1f GB", bytes / gb)
+            bytes >= mb -> String.format(Locale.US, "%.0f MB", bytes / mb)
+            bytes >= kb -> String.format(Locale.US, "%.0f KB", bytes / kb)
+            else -> "$bytes B"
+        }
+    }
+
+    fun setEmbeddedArtworkForCurrentTrack(bitmap: Bitmap, activeUri: String) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val bytes = bitmapToJpegBytes(bitmap)
+            withContext(Dispatchers.Main) {
+                updateCurrentMediaItemArtwork(url = null, artworkData = bytes, activeUri = activeUri)
+            }
+        }
+    }
+
+    private fun bitmapToJpegBytes(bitmap: Bitmap, maxSizePx: Int = 512, quality: Int = 86): ByteArray? {
+        return try {
+            val w = bitmap.width.coerceAtLeast(1)
+            val h = bitmap.height.coerceAtLeast(1)
+            val scale = min(maxSizePx.toFloat() / w.toFloat(), maxSizePx.toFloat() / h.toFloat()).coerceAtMost(1f)
+            val scaled = if (scale < 1f) {
+                val nw = (w * scale).roundToInt().coerceAtLeast(1)
+                val nh = (h * scale).roundToInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(bitmap, nw, nh, true)
+            } else {
+                bitmap
+            }
+
+            val out = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(40, 95), out)
+            out.toByteArray().takeIf { it.isNotEmpty() && it.size <= 800_000 }
+        } catch (_: OutOfMemoryError) {
+            // ФИКС OOM: Защита от падения при жесткой нехватке оперативки (например на старых телефонах)
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun coverCacheKey(artist: String?, title: String?, album: String?): String {
+        fun n(v: String?): String {
+            return v
+                ?.trim()
+                ?.replace(Regex("\\s+"), " ")
+                ?.lowercase(Locale.ROOT)
+                .orEmpty()
+        }
+        return listOf(n(artist), n(title), n(album)).joinToString("|")
+    }
+
+    private fun ensureCoverArt(
+        artist: String?,
+        title: String?,
+        album: String?,
+        activeUri: String?
+    ) {
+        val isCurrentRequest = activeUri != null && currentTrackUri?.toString() == activeUri
+        if (isCurrentRequest && hasEmbeddedArtwork) return
+
         val safeTitle = title?.trim().orEmpty()
         if (safeTitle.isBlank()) return
 
-        val cacheKey = listOf(artist?.trim().orEmpty(), safeTitle, album?.trim().orEmpty()).joinToString("|")
-        coverCache[cacheKey]?.let { cached ->
-            currentCoverUrl = cached
+        val key = coverCacheKey(artist, safeTitle, album)
+
+        // 1) In-memory state cache (fast path)
+        coverUrlCache[key]?.let { url ->
+            if (activeUri != null && currentTrackUri?.toString() == activeUri && !hasEmbeddedArtwork) {
+                currentCoverUrl = url
+                maybeApplyCoverPaletteFromCache(key, activeUri)
+                updateCurrentMediaItemArtwork(url = url, artworkData = null, activeUri = activeUri)
+                ensureNotificationArtworkPrepared(key, url, activeUri)
+            }
             return
         }
 
-        val activeUri = currentTrackUri?.toString()
-        viewModelScope.launch(Dispatchers.IO) {
-            val url = coverArtService.fetchCoverUrl(artist, safeTitle, album)
-            if (!url.isNullOrBlank()) {
-                coverCache[cacheKey] = url
-                withContext(Dispatchers.Main) {
-                    if (!hasEmbeddedArtwork && currentTrackUri?.toString() == activeUri) {
-                        currentCoverUrl = url
+        // 2) Persistent cache
+        val persistedUrl = prefs.getCachedCoverUrl(key)
+        if (!persistedUrl.isNullOrBlank()) {
+            coverUrlCache[key] = persistedUrl
+            if (activeUri != null && currentTrackUri?.toString() == activeUri && !hasEmbeddedArtwork) {
+                currentCoverUrl = persistedUrl
+                maybeApplyCoverPaletteFromCache(key, activeUri)
+                updateCurrentMediaItemArtwork(url = persistedUrl, artworkData = null, activeUri = activeUri)
+                ensureNotificationArtworkPrepared(key, persistedUrl, activeUri)
+            }
+            return
+        } else {
+            // Even if URL isn't cached yet, color might be.
+            maybeApplyCoverPaletteFromCache(key, activeUri)
+        }
+
+        // 3) Fetch (deduped + limited)
+        if (coverFetchJobs[key]?.isActive == true) return
+
+        val job = viewModelScope.launch(Dispatchers.IO) {
+            coverFetchLimiter.withPermit {
+                val url = coverArtService.fetchCoverUrl(artist, safeTitle, album)
+                if (!url.isNullOrBlank()) {
+                    prefs.saveCachedCoverUrl(key, url)
+                    withContext(Dispatchers.Main) {
+                        coverUrlCache[key] = url
+                        if (activeUri != null && currentTrackUri?.toString() == activeUri && !hasEmbeddedArtwork) {
+                            currentCoverUrl = url
+                            updateCurrentMediaItemArtwork(url = url, artworkData = null, activeUri = activeUri)
+                        }
+                    }
+
+                    // Prefetch and extract palette off the main thread.
+                    val app = getApplication<Application>()
+                    try {
+                        val req = ImageRequest.Builder(app)
+                            .data(url)
+                            .allowHardware(false)
+                            .size(512)
+                            .build()
+                        val result = app.imageLoader.execute(req)
+                        val bmp = (result.drawable as? BitmapDrawable)?.bitmap
+                        if (bmp != null) {
+                            // ФИКС КРАША: Защищаем Palette от битых картинок
+                            val palette = try { Palette.from(bmp).generate() } catch (e: Exception) { null }
+                            val dom = palette?.getDominantColor(0xFFD50000.toInt()) ?: 0xFFD50000.toInt()
+                            val sec = palette?.getDarkMutedColor(0xFF050505.toInt()) ?: 0xFF050505.toInt()
+                            prefs.saveCachedCoverColorArgb(key, dom)
+                            val artworkBytes = bitmapToJpegBytes(bmp)
+
+                            withContext(Dispatchers.Main) {
+                                coverColorCache[key] = Color(dom)
+                                if (isDynamicColorEnabled &&
+                                    !hasEmbeddedArtwork &&
+                                    activeUri != null &&
+                                    currentTrackUri?.toString() == activeUri
+                                ) {
+                                    dominantColor = Color(dom)
+                                    secondaryColor = Color(sec)
+                                }
+                                if (!hasEmbeddedArtwork &&
+                                    activeUri != null &&
+                                    currentTrackUri?.toString() == activeUri
+                                ) {
+                                    updateCurrentMediaItemArtwork(url = url, artworkData = artworkBytes, activeUri = activeUri)
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {
                     }
                 }
             }
+        }
+
+        coverFetchJobs[key] = job
+        job.invokeOnCompletion { coverFetchJobs.remove(key) }
+    }
+
+    private fun maybeApplyCoverPaletteFromCache(key: String, activeUri: String?) {
+        if (!isDynamicColorEnabled) return
+        if (hasEmbeddedArtwork) return
+        if (currentTrackUri?.toString() != activeUri) return
+
+        val cachedColor = prefs.getCachedCoverColorArgb(key) ?: return
+        coverColorCache[key] = Color(cachedColor)
+        dominantColor = Color(cachedColor)
+        // secondaryColor is best-effort; keep current if we don't have it.
+    }
+
+    private fun ensureNotificationArtworkPrepared(key: String, url: String, activeUri: String?) {
+        if (activeUri == null) return
+        if (currentTrackUri?.toString() != activeUri) return
+        if (hasEmbeddedArtwork) return
+        if (coverFetchJobs[key]?.isActive == true) return
+
+        val job = viewModelScope.launch(Dispatchers.IO) {
+            coverFetchLimiter.withPermit {
+                val app = getApplication<Application>()
+                try {
+                    val req = ImageRequest.Builder(app)
+                        .data(url)
+                        .allowHardware(false)
+                        .size(512)
+                        .build()
+                    val result = app.imageLoader.execute(req)
+                    val bmp = (result.drawable as? BitmapDrawable)?.bitmap ?: return@withPermit
+                    val bytes = bitmapToJpegBytes(bmp)
+                    val palette = try { Palette.from(bmp).generate() } catch (_: Exception) { null }
+                    val dom = palette?.getDominantColor(0xFFD50000.toInt())
+                    val sec = palette?.getDarkMutedColor(0xFF050505.toInt())
+                    if (dom != null) {
+                        prefs.saveCachedCoverColorArgb(key, dom)
+                    }
+                    withContext(Dispatchers.Main) {
+                        if (!hasEmbeddedArtwork && currentTrackUri?.toString() == activeUri) {
+                            if (dom != null) {
+                                coverColorCache[key] = Color(dom)
+                                if (isDynamicColorEnabled) {
+                                    dominantColor = Color(dom)
+                                    if (sec != null) secondaryColor = Color(sec)
+                                }
+                            }
+                            updateCurrentMediaItemArtwork(url = url, artworkData = bytes, activeUri = activeUri)
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+        coverFetchJobs[key] = job
+        job.invokeOnCompletion { coverFetchJobs.remove(key) }
+    }
+
+    private fun updateCurrentMediaItemArtwork(url: String?, artworkData: ByteArray?, activeUri: String?) {
+        val p = player ?: return
+        val idx = p.currentMediaItemIndex
+        val cur = p.currentMediaItem ?: return
+        if (cur.mediaId != activeUri) return
+
+        val metaBuilder = cur.mediaMetadata.buildUpon()
+        if (!url.isNullOrBlank()) metaBuilder.setArtworkUri(url.toUri())
+        if (artworkData != null) {
+            metaBuilder.setArtworkData(artworkData, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+        }
+        val newMeta = metaBuilder.build()
+
+        val updated = cur.buildUpon()
+            .setMediaMetadata(newMeta)
+            .build()
+
+        try {
+            p.replaceMediaItem(idx, updated)
+        } catch (_: Exception) {
         }
     }
 
@@ -966,6 +1319,15 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     metadataHandler.updateCurrentTrackInfo(getApplication(), mi)
                     saveState()
                 }
+
+                // "Кроссфейд": мягкое появление звука на старте следующего трека.
+                // Реального overlap между треками нет (один Player), но fade-in/fade-out ощущается как плавный переход.
+                if (crossfadeMs > 0) {
+                    crossfadeFadeInStartElapsed = SystemClock.elapsedRealtime()
+                    try { p.volume = 0f } catch (_: Exception) {}
+                } else {
+                    crossfadeFadeInStartElapsed = -1L
+                }
             }
             override fun onPlaybackStateChanged(s: Int) {
                 if (s == Player.STATE_READY) duration = p.duration.coerceAtLeast(0)
@@ -981,8 +1343,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         progressJob?.cancel()
         progressJob = viewModelScope.launch {
             while (isActive && (isPlaying || isErrorState)) {
+                val real = player?.currentPosition ?: 0L
                 if (!isScratching) {
-                    val real = player?.currentPosition ?: 0L
                     if (!isErrorState) currentPosition = if (isReversing) (duration - real).coerceAtLeast(0) else real
 
                     if (isVinylModeEnabled) {
@@ -994,6 +1356,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
+
+                // Автоматическое управление громкостью (таймер сна + кроссфейд)
+                applyAutomatedVolume(realPositionMs = real)
+
                 val now = System.currentTimeMillis()
                 if (isPlaying && now - lastStateSaveAt >= 5000L) {
                     saveState()
@@ -1001,6 +1367,43 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 delay(120L)
             }
+        }
+    }
+
+    private fun applyAutomatedVolume(realPositionMs: Long) {
+        val p = player ?: return
+
+        // 1) Sleep timer fade (в последние 30 секунд)
+        val base = sleepVolumeFactor.coerceIn(0f, 1f)
+
+        // 2) Crossfade (fade-in + fade-out)
+        val cfMs = crossfadeMs.coerceAtLeast(0)
+        val dur = duration.coerceAtLeast(0L)
+
+        var factor = 1f
+        if (cfMs > 0 && dur > 0L) {
+            val remaining = (dur - realPositionMs).coerceAtLeast(0L)
+            val fadeOut = if (remaining <= cfMs.toLong()) remaining.toFloat() / cfMs.toFloat() else 1f
+
+            val fadeIn = if (crossfadeFadeInStartElapsed >= 0L) {
+                val elapsed = (SystemClock.elapsedRealtime() - crossfadeFadeInStartElapsed).coerceAtLeast(0L)
+                (elapsed.toFloat() / cfMs.toFloat()).coerceIn(0f, 1f)
+            } else {
+                1f
+            }
+
+            factor = min(fadeIn, fadeOut)
+            if (fadeIn >= 1f) crossfadeFadeInStartElapsed = -1L
+        } else {
+            crossfadeFadeInStartElapsed = -1L
+        }
+
+        val target = (base * factor).coerceIn(0f, 1f)
+        try {
+            if (abs(p.volume - target) > 0.02f) {
+                p.volume = target
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -1029,22 +1432,3 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.trec.music.data.TrecTrackEnhanced
-import com.trec.music.ui.theme.TrecRed
 import com.trec.music.utils.formatTime
 import com.trec.music.viewmodel.MusicViewModel
 
@@ -73,10 +72,15 @@ fun TrackRow(
 ) {
     val isPlaying = viewModel.currentTrackUri == track.uri
     // Если играет - берем доминантный цвет, иначе генерируем по хэшу (для стабильности)
-    val color = if(isPlaying) viewModel.dominantColor else TrecRed
+    val color = if(isPlaying) viewModel.dominantColor else MaterialTheme.colorScheme.primary
     var showMenu by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
+
+    LaunchedEffect(track.uri) {
+        viewModel.ensureCoverForTrack(track)
+    }
+    val coverUrl = viewModel.getCoverUrlForTrack(track)
 
     // Haptic Feedback (Вибрация)
     val vibrator = remember {
@@ -136,7 +140,7 @@ fun TrackRow(
 
                 // Реальная обложка
                 AsyncImage(
-                    model = track.uri,
+                    model = coverUrl ?: track.uri,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)),
                     contentScale = ContentScale.Crop
@@ -225,7 +229,7 @@ fun TrackContextMenu(
                         onDeleteFromDevice()
                         showDeleteConfirm = false
                         onDismiss()
-                    }, TrecRed, Modifier.weight(1f))
+                    }, MaterialTheme.colorScheme.primary, Modifier.weight(1f))
                 }
             }
         }
@@ -277,9 +281,9 @@ fun TrackContextMenu(
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.DeleteForever, null, tint = TrecRed, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.DeleteForever, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Удалить с устройства", color = TrecRed, fontWeight = FontWeight.Bold)
+                    Text("Удалить с устройства", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 }
 
                 Spacer(Modifier.height(8.dp))
@@ -304,7 +308,7 @@ fun TrackInfoDialog(track: TrecTrackEnhanced, viewModel: MusicViewModel, onDismi
             info.forEach { (k, v) -> InfoRow(label = k, value = v) }
 
             Spacer(Modifier.height(24.dp))
-            GlassButton("OK", onDismiss, TrecRed, Modifier.fillMaxWidth())
+            GlassButton("OK", onDismiss, MaterialTheme.colorScheme.primary, Modifier.fillMaxWidth())
         }
     }
 }
@@ -337,7 +341,7 @@ fun AddToPlaylistDialog(track: TrecTrackEnhanced, viewModel: MusicViewModel, onD
                         Spacer(Modifier.width(16.dp))
                         Text(playlistName, color = Color.White, fontSize = 16.sp)
                         Spacer(Modifier.weight(1f))
-                        Icon(Icons.Rounded.Add, null, tint = TrecRed)
+                        Icon(Icons.Rounded.Add, null, tint = MaterialTheme.colorScheme.primary)
                     }
                     HorizontalDivider(color = Color.White.copy(0.1f))
                 }

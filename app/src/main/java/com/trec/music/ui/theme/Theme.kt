@@ -37,9 +37,9 @@ val TrecGray = Color(0xFF282828)
 val TrecDarkGray = Color(0xFF1E1E1E)
 // ------------------------
 
-private val DarkColorScheme = darkColorScheme(
-    primary = TrecRed,
-    secondary = TrecRed,
+private fun darkScheme(accent: Color) = darkColorScheme(
+    primary = accent,
+    secondary = accent,
     background = TrecBlack,
     surface = TrecDarkGray,
     onPrimary = Color.White,
@@ -48,7 +48,10 @@ private val DarkColorScheme = darkColorScheme(
 )
 
 @Composable
-fun TrecMusicTheme(content: @Composable () -> Unit) {
+fun TrecMusicTheme(
+    accentColor: Color = TrecRed,
+    content: @Composable () -> Unit
+) {
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
@@ -67,8 +70,9 @@ fun TrecMusicTheme(content: @Composable () -> Unit) {
         }
     }
 
+    val scheme = darkScheme(accentColor)
     MaterialTheme(
-        colorScheme = DarkColorScheme,
+        colorScheme = scheme,
         content = content
     )
 }

@@ -26,7 +26,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.dp
 import com.trec.music.ui.theme.TrecBlack
-import com.trec.music.ui.theme.TrecRed
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.cos
@@ -88,6 +87,7 @@ fun LiveVisualizer(isPlaying: Boolean, color: Color) {
 fun RippleVinylVisualizer(
     amplitude: Int, // 0..32767
     isRecording: Boolean,
+    accent: Color,
     modifier: Modifier = Modifier
 ) {
     // Вращение пластинки
@@ -144,7 +144,7 @@ fun RippleVinylVisualizer(
                 val alpha = (1f - progress) * 0.25f // Максимум 25% прозрачности (очень мягко)
 
                 drawCircle(
-                    color = TrecRed.copy(alpha = alpha),
+                    color = accent.copy(alpha = alpha),
                     radius = currentRadius,
                     center = Offset(cx, cy),
                     // ОЧЕНЬ ТОЛСТАЯ ЛИНИЯ для эффекта размытия/волны
@@ -165,7 +165,7 @@ fun RippleVinylVisualizer(
                 drawCircle(Color.White.copy(0.05f), radius = r * 0.5f, style = Stroke(1.dp.toPx()))
 
                 // Яблоко
-                drawCircle(TrecRed, radius = r * 0.35f)
+                drawCircle(accent, radius = r * 0.35f)
                 drawCircle(Color.Black, radius = r * 0.05f)
             }
         }

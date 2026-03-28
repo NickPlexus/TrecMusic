@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
-import com.trec.music.ui.theme.TrecRed
 
 /**
  * Стильный glassmorphism dropdown меню
@@ -116,13 +115,13 @@ fun GlassDropdownMenuItem(
     onClick: () -> Unit
 ) {
     val backgroundColor by animateColorAsState(
-        targetValue = if (selected) TrecRed.copy(0.15f) else Color.Transparent,
+        targetValue = if (selected) MaterialTheme.colorScheme.primary.copy(0.15f) else Color.Transparent,
         animationSpec = tween(150),
         label = "bg"
     )
     
     val textColor by animateColorAsState(
-        targetValue = if (selected) TrecRed else Color.White,
+        targetValue = if (selected) MaterialTheme.colorScheme.primary else Color.White,
         animationSpec = tween(150),
         label = "text"
     )
@@ -163,7 +162,7 @@ fun GlassDropdownMenuItem(
             Icon(
                 imageVector = Icons.Rounded.Check,
                 contentDescription = "Selected",
-                tint = TrecRed,
+                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(18.dp)
             )
         }

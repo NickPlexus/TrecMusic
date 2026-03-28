@@ -9,8 +9,12 @@
 
 package com.trec.music.ui.navigation
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
@@ -28,7 +32,6 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -43,37 +46,22 @@ import com.trec.music.viewmodel.MusicViewModel
 
 @Composable
 fun BottomNavigationBar(navController: NavController, viewModel: MusicViewModel) {
-    // Получаем цвет из VM
-    val activeColor = viewModel.dominantColor
-
-    // Динамический список вкладок
-    val items = remember(viewModel.isRecorderFeatureEnabled, viewModel.isRadioEnabled) {
-        val list = mutableListOf<BottomNavItem>()
-
-        // 1. Главная (Всегда)
-        list.add(BottomNavItem("Главная", "home", Icons.Filled.Home, Icons.Outlined.Home))
-
-        // 2. Библиотека (Всегда)
-        list.add(BottomNavItem("Библиотека", "library", Icons.Filled.LibraryMusic, Icons.Outlined.LibraryMusic))
-
-        // 3. Запись (Опционально)
-        if (viewModel.isRecorderFeatureEnabled) {
-            list.add(BottomNavItem("Запись", "recorder", Icons.Filled.Mic, Icons.Outlined.Mic))
-        }
-
-        // 4. Радио (Опционально)
-        if (viewModel.isRadioEnabled) {
-            list.add(BottomNavItem("Радио", "radio", Icons.Filled.Radio, Icons.Outlined.Radio))
-        }
-
-        // 5. Меню (Всегда)
-        list.add(BottomNavItem("Меню", "settings", Icons.Filled.Settings, Icons.Outlined.Settings))
-
-        list
-    }
+    val activeColor = MaterialTheme.colorScheme.primary
 
     // Если доминантный цвет слишком темный, используем белый для активности
     val safeActiveColor = if (activeColor.luminance() < 0.3f) Color.White else activeColor
+
+    // Плавное появление/исчезновение вкладок модулей
+    val recorderWeight by animateFloatAsState(
+        targetValue = if (viewModel.isRecorderFeatureEnabled) 1f else 0.001f,
+        animationSpec = tween(350, easing = FastOutSlowInEasing),
+        label = "recorderWeight"
+    )
+    val radioWeight by animateFloatAsState(
+        targetValue = if (viewModel.isRadioEnabled) 1f else 0.001f,
+        animationSpec = tween(350, easing = FastOutSlowInEasing),
+        label = "radioWeight"
+    )
 
     Box(
         modifier = Modifier
@@ -94,48 +82,103 @@ fun BottomNavigationBar(navController: NavController, viewModel: MusicViewModel)
             val navBackStackEntry by navController.currentBackStackEntryAsState()
             val currentDestination = navBackStackEntry?.destination
 
-            items.forEach { item ->
-                val isSelected = currentDestination?.hierarchy?.any { it.route == item.route } == true
+            NavSlot(
+                modifier = Modifier.weight(1f),
+                item = BottomNavItem("Главная", "home", Icons.Filled.Home, Icons.Outlined.Home),
+                visible = true,
+                currentDestination = currentDestination,
+                navController = navController,
+                safeActiveColor = safeActiveColor
+            )
 
-                NavigationBarItem(
-                    selected = isSelected,
-                    onClick = {
-                        if (isSelected) {
-                            navController.navigate(item.route) {
-                                popUpTo(navController.graph.findStartDestination().id) { inclusive = false }
-                                launchSingleTop = true
-                            }
-                        } else {
-                            navController.navigate(item.route) {
-                                popUpTo(navController.graph.findStartDestination().id) { saveState = true }
-                                restoreState = true
-                                launchSingleTop = true
-                            }
-                        }
-                    },
-                    icon = {
-                        Icon(
-                            imageVector = if (isSelected) item.selectedIcon else item.unselectedIcon,
-                            contentDescription = item.name
-                        )
-                    },
-                    label = {
-                        Text(
-                            text = item.name,
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    },
-                    colors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = safeActiveColor,
-                        selectedTextColor = safeActiveColor,
-                        indicatorColor = safeActiveColor.copy(alpha = 0.15f),
-                        unselectedIconColor = Color.Gray,
-                        unselectedTextColor = Color.Gray
-                    )
-                )
-            }
+            NavSlot(
+                modifier = Modifier.weight(1f),
+                item = BottomNavItem("Библиотека", "library", Icons.Filled.LibraryMusic, Icons.Outlined.LibraryMusic),
+                visible = true,
+                currentDestination = currentDestination,
+                navController = navController,
+                safeActiveColor = safeActiveColor
+            )
+
+            NavSlot(
+                modifier = Modifier.weight(recorderWeight),
+                item = BottomNavItem("Запись", "recorder", Icons.Filled.Mic, Icons.Outlined.Mic),
+                visible = viewModel.isRecorderFeatureEnabled,
+                currentDestination = currentDestination,
+                navController = navController,
+                safeActiveColor = safeActiveColor
+            )
+
+            NavSlot(
+                modifier = Modifier.weight(radioWeight),
+                item = BottomNavItem("Радио", "radio", Icons.Filled.Radio, Icons.Outlined.Radio),
+                visible = viewModel.isRadioEnabled,
+                currentDestination = currentDestination,
+                navController = navController,
+                safeActiveColor = safeActiveColor
+            )
+
+            NavSlot(
+                modifier = Modifier.weight(1f),
+                item = BottomNavItem("Меню", "settings", Icons.Filled.Settings, Icons.Outlined.Settings),
+                visible = true,
+                currentDestination = currentDestination,
+                navController = navController,
+                safeActiveColor = safeActiveColor
+            )
         }
     }
+}
+
+@Composable
+private fun RowScope.NavSlot(
+    modifier: Modifier,
+    item: BottomNavItem,
+    visible: Boolean,
+    currentDestination: androidx.navigation.NavDestination?,
+    navController: NavController,
+    safeActiveColor: Color
+) {
+    val isSelected = currentDestination?.hierarchy?.any { it.route == item.route } == true
+
+    NavigationBarItem(
+        modifier = modifier,
+        enabled = visible,
+        selected = isSelected,
+        onClick = {
+            if (isSelected) {
+                navController.navigate(item.route) {
+                    popUpTo(navController.graph.findStartDestination().id) { inclusive = false }
+                    launchSingleTop = true
+                }
+            } else {
+                navController.navigate(item.route) {
+                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                    restoreState = true
+                    launchSingleTop = true
+                }
+            }
+        },
+        icon = {
+            Icon(
+                imageVector = if (isSelected) item.selectedIcon else item.unselectedIcon,
+                contentDescription = item.name
+            )
+        },
+        label = {
+            Text(
+                text = item.name,
+                style = MaterialTheme.typography.labelSmall
+            )
+        },
+        colors = NavigationBarItemDefaults.colors(
+            selectedIconColor = safeActiveColor,
+            selectedTextColor = safeActiveColor,
+            indicatorColor = safeActiveColor.copy(alpha = 0.15f),
+            unselectedIconColor = Color.Gray,
+            unselectedTextColor = Color.Gray
+        )
+    )
 }
 
 data class BottomNavItem(

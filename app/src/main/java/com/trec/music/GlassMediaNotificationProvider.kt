@@ -92,9 +92,12 @@ class GlassMediaNotificationProvider(private val context: Context) : MediaNotifi
             .setCustomContentView(compactView)
             .setCustomBigContentView(bigView)
             .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setShowWhen(false)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
-            .setOngoing(false)
+            .setOngoing(true)
             .setStyle(MediaStyleNotificationHelper.DecoratedMediaCustomViewStyle(mediaSession))
 
         val bitmapFuture = mediaSession.bitmapLoader.loadBitmapFromMetadata(metadata)

@@ -50,6 +50,7 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -81,7 +82,7 @@ import com.trec.music.ui.components.GlassButton
 import com.trec.music.ui.components.GlassDialog
 import com.trec.music.ui.components.GlassTextButton
 import com.trec.music.ui.theme.TrecBlack
-import com.trec.music.ui.theme.TrecRed
+import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.viewmodel.RadioStation
 import com.trec.music.viewmodel.RadioViewModel
 import kotlin.random.Random
@@ -136,6 +137,7 @@ enum class StationState { IDLE, TUNING, PLAYING, ERROR }
 
 // --- МОДИФИКАТОР ДЛЯ ЭФФЕКТА СТЕКЛА (КРАСНЫЙ) ---
 fun Modifier.glassEffect(
+    accent: Color,
     shape: Shape = RoundedCornerShape(16.dp),
     alpha: Float = 0.12f,
     borderAlpha: Float = 0.2f
@@ -144,17 +146,19 @@ fun Modifier.glassEffect(
     .background(
         Brush.linearGradient(
             colors = listOf(
-                TrecRed.copy(alpha = alpha),
-                TrecRed.copy(alpha = alpha * 0.3f)
+                accent.copy(alpha = alpha),
+                accent.copy(alpha = alpha * 0.3f)
             )
         )
     )
-    .border(1.dp, TrecRed.copy(alpha = borderAlpha), shape)
+    .border(1.dp, accent.copy(alpha = borderAlpha), shape)
 
 @Composable
 fun RadioScreen() {
     val viewModel: RadioViewModel = viewModel()
     val context = LocalContext.current
+    val bottomOverlay = LocalBottomOverlayPadding.current
+    val accent = MaterialTheme.colorScheme.primary
 
     var isEditMode by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
@@ -214,7 +218,7 @@ fun RadioScreen() {
                 .matchParentSize()
                 .background(
                     Brush.radialGradient(
-                        colors = listOf(TrecRed.copy(alpha = 0.20f), Color.Transparent),
+                        colors = listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.20f), Color.Transparent),
                         radius = 900f
                     )
                 )
@@ -266,8 +270,8 @@ fun RadioScreen() {
                     unfocusedTextColor = Color.White,
                     focusedBorderColor = Color.Transparent,
                     unfocusedBorderColor = Color.Transparent,
-                    cursorColor = TrecRed,
-                    focusedContainerColor = TrecRed.copy(alpha = 0.12f),
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                     unfocusedContainerColor = Color.White.copy(alpha = 0.04f)
                 ),
                 shape = RoundedCornerShape(16.dp),
@@ -283,7 +287,7 @@ fun RadioScreen() {
 
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 200.dp)
+                contentPadding = PaddingValues(bottom = bottomOverlay + 24.dp)
             ) {
                 if (customStations.isNotEmpty()) {
                     item {
@@ -329,7 +333,7 @@ fun RadioScreen() {
                         Text("Все станции", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         if (viewModel.hiddenStationsCount > 0) {
                             TextButton(onClick = { viewModel.restoreHiddenStations() }) {
-                                Text("Показать скрытые (${viewModel.hiddenStationsCount})", color = TrecRed, fontSize = 12.sp)
+                                Text("Показать скрытые (${viewModel.hiddenStationsCount})", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
                             }
                         } else {
                             Text("${defaultStations.size}", color = Color.White.copy(0.5f), fontSize = 14.sp)
@@ -369,10 +373,10 @@ fun RadioScreen() {
             text = { Text(error, color = Color.White.copy(0.8f)) },
             confirmButton = {
                 TextButton(onClick = { viewModel.clearError() }) {
-                    Text("Ок", color = TrecRed)
+                    Text("Ок", color = MaterialTheme.colorScheme.primary)
                 }
             },
-            containerColor = TrecRed.copy(alpha = 0.2f),
+            containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
             titleContentColor = Color.White,
             textContentColor = Color.White.copy(0.8f),
             shape = RoundedCornerShape(20.dp)
@@ -397,7 +401,7 @@ private fun HeaderRow(
                 "TREC RADIO",
                 fontSize = 32.sp,
                 fontWeight = FontWeight.ExtraBold,
-                color = TrecRed   // красный заголовок
+                color = MaterialTheme.colorScheme.primary   // красный заголовок
             )
             Text("Интернет‑эфир", fontSize = 16.sp, color = Color.White.copy(0.6f))
         }
@@ -408,16 +412,16 @@ private fun HeaderRow(
                 modifier = Modifier
                     .size(42.dp)
                     .clip(CircleShape)
-                    .background(if (isEditMode) TrecRed.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f))
+                    .background(if (isEditMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f))
             ) {
-                Icon(Icons.Rounded.Edit, null, tint = if (isEditMode) TrecRed else Color.White.copy(0.7f))
+                Icon(Icons.Rounded.Edit, null, tint = if (isEditMode) MaterialTheme.colorScheme.primary else Color.White.copy(0.7f))
             }
             IconButton(
                 onClick = onAddStation,
                 modifier = Modifier
                     .size(42.dp)
                     .clip(CircleShape)
-                    .background(TrecRed.copy(alpha = 0.2f))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
             ) {
                 Icon(Icons.Rounded.Add, null, tint = Color.White)
             }
@@ -474,7 +478,7 @@ private fun NowPlayingGlassCard(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .glassEffect(RoundedCornerShape(24.dp), alpha = 0.15f)
+            .glassEffect(MaterialTheme.colorScheme.primary, RoundedCornerShape(24.dp), alpha = 0.15f)
             .padding(18.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -485,7 +489,7 @@ private fun NowPlayingGlassCard(
             ) {
                 Text(
                     "Сейчас в эфире",
-                    color = TrecRed.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -537,7 +541,7 @@ private fun NowPlayingGlassCard(
                         modifier = Modifier
                             .size(54.dp)
                             .clip(CircleShape)
-                            .background(if (isActive) TrecRed else TrecRed.copy(alpha = 0.2f))
+                            .background(if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
                             .clickable { if (isUnavailable) onRetry() else onPlayPause() },
                         contentAlignment = Alignment.Center
                     ) {
@@ -598,7 +602,7 @@ private fun GlassRadioStationCard(
     Box(
         modifier = Modifier
             .width(160.dp)
-            .glassEffect(RoundedCornerShape(20.dp), alpha = 0.08f)
+            .glassEffect(MaterialTheme.colorScheme.primary, RoundedCornerShape(20.dp), alpha = 0.08f)
             .clickable(onClick = onClick)
             .padding(14.dp)
     ) {
@@ -653,10 +657,10 @@ private fun GlassRadioStationCard(
                         Icon(
                             Icons.Rounded.VolumeUp,
                             null,
-                            tint = TrecRed,
+                            tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(14.dp)
                         )
-                        Text("В эфире", color = TrecRed, fontSize = 11.sp)
+                        Text("В эфире", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp)
                     }
                 }
 
@@ -681,6 +685,7 @@ private fun GlassRadioStationRow(
         modifier = Modifier
             .fillMaxWidth()
             .glassEffect(
+                accent = MaterialTheme.colorScheme.primary,
                 shape = RoundedCornerShape(18.dp),
                 alpha = if (isSelected) 0.2f else 0.05f,
                 borderAlpha = if (isSelected) 0.4f else 0.1f
@@ -740,8 +745,8 @@ private fun GlassRadioStationRow(
                         .size(44.dp)
                         .clip(CircleShape)
                         .background(
-                            if (isSelected && state == StationState.PLAYING) TrecRed
-                            else TrecRed.copy(alpha = 0.1f)
+                            if (isSelected && state == StationState.PLAYING) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
                         ),
                     contentAlignment = Alignment.Center
                 ) {
@@ -779,8 +784,8 @@ private fun StationArt(station: RadioStation, size: Dp) {
         modifier = Modifier
             .size(size)
             .clip(RoundedCornerShape(14.dp))
-            .background(TrecRed.copy(alpha = 0.1f))
-            .border(1.dp, TrecRed.copy(alpha = 0.2f), RoundedCornerShape(14.dp)),
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
+            .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), RoundedCornerShape(14.dp)),
         contentAlignment = Alignment.Center
     ) {
         if (station.iconUrl != null) {
@@ -797,7 +802,7 @@ private fun StationArt(station: RadioStation, size: Dp) {
             Icon(
                 Icons.Rounded.Radio,
                 null,
-                tint = TrecRed.copy(alpha = 0.5f),
+                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
                 modifier = Modifier.size(size / 2)
             )
         }
@@ -876,8 +881,8 @@ private fun AddStationDialog(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.White.copy(0.2f)
                 ),
                 modifier = Modifier.fillMaxWidth()
@@ -891,8 +896,8 @@ private fun AddStationDialog(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.White.copy(0.2f)
                 ),
                 modifier = Modifier.fillMaxWidth()
@@ -906,8 +911,8 @@ private fun AddStationDialog(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.White.copy(0.2f)
                 ),
                 modifier = Modifier.fillMaxWidth()
@@ -921,8 +926,8 @@ private fun AddStationDialog(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.White.copy(0.2f)
                 ),
                 modifier = Modifier.fillMaxWidth()
@@ -936,8 +941,8 @@ private fun AddStationDialog(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.White.copy(0.2f)
                 ),
                 modifier = Modifier.fillMaxWidth()
@@ -950,8 +955,8 @@ private fun AddStationDialog(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.White.copy(0.2f)
                 ),
                 modifier = Modifier.fillMaxWidth()
@@ -965,8 +970,8 @@ private fun AddStationDialog(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.White.copy(0.2f)
                 ),
                 modifier = Modifier.fillMaxWidth()
@@ -980,8 +985,8 @@ private fun AddStationDialog(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.White.copy(0.2f)
                 ),
                 modifier = Modifier.fillMaxWidth()
@@ -1006,7 +1011,7 @@ private fun AddStationDialog(
                             )
                         )
                     },
-                    TrecRed,
+                    MaterialTheme.colorScheme.primary,
                     Modifier.weight(1f)
                 )
             }
@@ -1033,7 +1038,7 @@ private fun RadioInfoDialog(onDismiss: () -> Unit) {
             )
             Text(
                 "Как добавить свою станцию:",
-                color = TrecRed,
+                color = MaterialTheme.colorScheme.primary,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -1050,7 +1055,7 @@ private fun RadioInfoDialog(onDismiss: () -> Unit) {
                 color = Color.White.copy(0.6f),
                 fontSize = 12.sp
             )
-            GlassButton("Понятно", onDismiss, TrecRed, Modifier.fillMaxWidth())
+            GlassButton("Понятно", onDismiss, MaterialTheme.colorScheme.primary, Modifier.fillMaxWidth())
         }
     }
 }

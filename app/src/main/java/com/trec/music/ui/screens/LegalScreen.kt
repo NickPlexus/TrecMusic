@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,7 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trec.music.ui.theme.TrecBlack
-import com.trec.music.ui.theme.TrecRed
+import com.trec.music.ui.LocalBottomOverlayPadding
 
 enum class LegalType { PRIVACY, TERMS }
 
@@ -47,7 +48,7 @@ fun LegalScreen(type: LegalType, onBack: () -> Unit) {
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(TrecRed.copy(alpha = 0.12f), Color.Transparent, TrecBlack)
+                        colors = listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), Color.Transparent, TrecBlack)
                     )
                 )
         ) {
@@ -63,12 +64,13 @@ fun LegalScreen(type: LegalType, onBack: () -> Unit) {
             }
 
             val scrollState = rememberScrollState()
+            val bottomOverlay = LocalBottomOverlayPadding.current
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(scrollState)
                     .padding(horizontal = 16.dp)
-                    .padding(bottom = 32.dp),
+                    .padding(bottom = bottomOverlay + 32.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 if (type == LegalType.PRIVACY) {
@@ -121,7 +123,7 @@ fun LegalScreen(type: LegalType, onBack: () -> Unit) {
 @Composable
 private fun LegalSection(title: String, content: @Composable () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title, color = TrecRed, fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+        Text(title, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
         content()
     }
 }

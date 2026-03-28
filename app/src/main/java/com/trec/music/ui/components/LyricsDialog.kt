@@ -13,6 +13,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -25,7 +26,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.trec.music.ui.theme.TrecRed
 
 @Composable
 fun LyricsDialog(
@@ -95,7 +95,7 @@ fun LyricsDialog(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
-                            CircularProgressIndicator(color = TrecRed, strokeWidth = 2.dp)
+                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.height(16.dp))
                             Text("Загрузка текста...", color = Color.Gray, fontSize = 14.sp)
                         }
@@ -106,11 +106,11 @@ fun LyricsDialog(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
-                            Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = TrecRed, modifier = Modifier.size(48.dp))
+                            Icon(Icons.Rounded.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(text = error, color = Color.Gray, fontSize = 14.sp, textAlign = TextAlign.Center)
                             Spacer(modifier = Modifier.height(16.dp))
-                            GlassButton(text = "Повторить", onClick = onRetry, color = TrecRed)
+                            GlassButton(text = "Повторить", onClick = onRetry, color = MaterialTheme.colorScheme.primary)
                         }
                     }
                     lyrics != null -> {
@@ -151,7 +151,7 @@ fun LyricsDialog(
                 LinearProgressIndicator(
                     progress = { progress },
                     modifier = Modifier.fillMaxWidth(),
-                    color = TrecRed,
+                    color = MaterialTheme.colorScheme.primary,
                     trackColor = Color.Gray.copy(0.3f)
                 )
                 Spacer(modifier = Modifier.height(8.dp))

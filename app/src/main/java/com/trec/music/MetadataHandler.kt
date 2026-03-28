@@ -254,6 +254,9 @@ class MetadataHandler(private val vm: MusicViewModel) {
             vm.isCurrentTrackFav = vm.favoriteTracks.contains(uriString)
             vm.instrumentalTrackPath = null
 
+            // Start online cover lookup in parallel with embedded-art extraction.
+            vm.refreshCoverArt(vm.currentTrackArtist, vm.currentTrackTitle, vm.currentTrackAlbum)
+
             if (!vm.brokenTracks.contains(uriString) && context != null) {
                 extractColors(context, uri)
 
@@ -291,6 +294,8 @@ class MetadataHandler(private val vm: MusicViewModel) {
                     vm.currentCoverUrl = null
                     val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                     if (bitmap != null) {
+                        // Push embedded artwork into MediaSession metadata so the notification / system player can render it.
+                        vm.setEmbeddedArtworkForCurrentTrack(bitmap, uri.toString())
                         val p = Palette.from(bitmap).generate()
                         withContext(Dispatchers.Main) {
                             if (vm.isDynamicColorEnabled) {

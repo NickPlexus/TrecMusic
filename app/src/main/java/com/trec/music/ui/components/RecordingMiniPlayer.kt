@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,7 +40,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trec.music.ui.theme.TrecBlack
-import com.trec.music.ui.theme.TrecRed
 import com.trec.music.viewmodel.RecorderViewModel
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -50,7 +50,7 @@ fun RecordingMiniPlayer(
     onOpen: () -> Unit
 ) {
     val accent by animateColorAsState(
-        targetValue = TrecRed,
+        targetValue = MaterialTheme.colorScheme.primary,
         animationSpec = androidx.compose.animation.core.tween(1200),
         label = "RecordingMiniPlayerColor"
     )

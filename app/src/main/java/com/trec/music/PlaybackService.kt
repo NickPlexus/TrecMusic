@@ -13,9 +13,12 @@ package com.trec.music
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -33,6 +36,7 @@ import com.trec.music.utils.TrecAudioProcessor
 class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private lateinit var prefs: PrefsManager
+    private var listenStartElapsedMs: Long? = null
 
     // Наш кастомный процессор (храним ссылку, чтобы менять параметры)
     private val trecAudioProcessor = TrecAudioProcessor()
@@ -90,6 +94,33 @@ class PlaybackService : MediaSessionService() {
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setSkipSilenceEnabled(skipSilence)
             .build()
+
+        fun commitListeningTime() {
+            val start = listenStartElapsedMs ?: return
+            val delta = (SystemClock.elapsedRealtime() - start).coerceAtLeast(0L)
+            listenStartElapsedMs = null
+            prefs.addListeningTime(delta)
+        }
+
+        player.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    if (listenStartElapsedMs == null) {
+                        listenStartElapsedMs = SystemClock.elapsedRealtime()
+                        prefs.incrementListenSession()
+                    }
+                } else {
+                    commitListeningTime()
+                }
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (mediaItem == null) return
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) return
+                prefs.incrementTracksStarted()
+                prefs.incrementTrackPlayCount(mediaItem.mediaId)
+            }
+        })
 
         // 5. Intent для уведомления
         val intent = Intent(this, MainActivity::class.java)
@@ -168,6 +199,13 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
 
     override fun onDestroy() {
+        // If the service is killed while playing, commit the current listening session.
+        val start = listenStartElapsedMs
+        if (start != null) {
+            val delta = (SystemClock.elapsedRealtime() - start).coerceAtLeast(0L)
+            listenStartElapsedMs = null
+            prefs.addListeningTime(delta)
+        }
         mediaSession?.run {
             player.release()
             release()

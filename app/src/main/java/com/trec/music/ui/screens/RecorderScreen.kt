@@ -45,7 +45,7 @@ import com.trec.music.ui.components.GlassTextButton
 import com.trec.music.ui.components.RippleVinylVisualizer
 import com.trec.music.ui.theme.TrecBlack
 import com.trec.music.ui.theme.TrecGray
-import com.trec.music.ui.theme.TrecRed
+import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.utils.formatTime
 import com.trec.music.viewmodel.MusicViewModel
 import com.trec.music.viewmodel.RecorderViewModel
@@ -58,6 +58,7 @@ fun RecorderScreen(
     musicViewModel: MusicViewModel
 ) {
     val context = LocalContext.current
+    val bottomOverlay = LocalBottomOverlayPadding.current
 
     // --- ЛОГИКА ЗАПРОСА ПРАВ ---
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -101,7 +102,7 @@ fun RecorderScreen(
             title = { Text("Удалить запись?") },
             text = { Text("Файл ${itemToDelete?.file?.name} будет удален безвозвратно.") },
             confirmButton = {
-                Button(colors = ButtonDefaults.buttonColors(containerColor = TrecRed), onClick = {
+                Button(colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary), onClick = {
                     itemToDelete?.let { viewModel.deleteRecording(it) }
                     itemToDelete = null
                 }) { Text("Удалить") }
@@ -136,7 +137,7 @@ fun RecorderScreen(
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = Color.White, unfocusedTextColor = Color.White,
-                        cursorColor = TrecRed, focusedBorderColor = TrecRed, unfocusedBorderColor = Color.Gray
+                        cursorColor = MaterialTheme.colorScheme.primary, focusedBorderColor = MaterialTheme.colorScheme.primary, unfocusedBorderColor = Color.Gray
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -157,7 +158,7 @@ fun RecorderScreen(
                         viewModel.stopPlayback()
                         viewModel.renameRecording(itemToRename!!, newName)
                         itemToRename = null
-                    }, TrecRed, Modifier.weight(1f))
+                    }, MaterialTheme.colorScheme.primary, Modifier.weight(1f))
                 }
             }
         }
@@ -173,7 +174,7 @@ fun RecorderScreen(
                 .matchParentSize()
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(TrecRed.copy(alpha = 0.18f), Color.Transparent, TrecBlack)
+                        colors = listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f), Color.Transparent, TrecBlack)
                     )
                 )
         )
@@ -225,7 +226,7 @@ fun RecorderScreen(
                     ) {
                         Text(
                             text = if (viewModel.isRecording) "Запись" else "Готово к записи",
-                            color = if (viewModel.isRecording) TrecRed else Color.White.copy(0.7f),
+                            color = if (viewModel.isRecording) MaterialTheme.colorScheme.primary else Color.White.copy(0.7f),
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp
@@ -244,6 +245,7 @@ fun RecorderScreen(
                         RippleVinylVisualizer(
                             amplitude = if (viewModel.isRecording) viewModel.currentAmplitude else 0,
                             isRecording = viewModel.isRecording && !viewModel.isPaused,
+                            accent = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.fillMaxSize()
                         )
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -255,7 +257,7 @@ fun RecorderScreen(
                             )
                             Text(
                                 text = if (viewModel.isRecording) "REC" else "READY",
-                                color = if (viewModel.isRecording) TrecRed else Color.White.copy(0.5f),
+                                color = if (viewModel.isRecording) MaterialTheme.colorScheme.primary else Color.White.copy(0.5f),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 2.sp
@@ -280,7 +282,7 @@ fun RecorderScreen(
                                 modifier = Modifier.size(72.dp).clip(CircleShape).background(Color.White).clickable { viewModel.stopRecording() },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Box(Modifier.size(28.dp).clip(RoundedCornerShape(4.dp)).background(TrecRed))
+                                Box(Modifier.size(28.dp).clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.primary))
                             }
                         } else {
                             val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -289,7 +291,7 @@ fun RecorderScreen(
                                 animationSpec = infiniteRepeatable(tween(1500), RepeatMode.Reverse), label = "scale"
                             )
                             Box(
-                                modifier = Modifier.size(76.dp).scale(scale).clip(CircleShape).background(TrecRed).clickable {
+                                modifier = Modifier.size(76.dp).scale(scale).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable {
                                     if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                                         if (musicViewModel.isPlaying) musicViewModel.pausePlayback()
                                         viewModel.startRecording()
@@ -320,7 +322,7 @@ fun RecorderScreen(
 
             LazyColumn(
                 modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(top = 4.dp, bottom = 200.dp),
+                contentPadding = PaddingValues(top = 4.dp, bottom = bottomOverlay + 24.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(viewModel.recordings, key = { it.file.absolutePath }) { item ->
@@ -348,15 +350,15 @@ fun RecorderScreen(
 @Composable
 fun SettingsPill(isActive: Boolean, text: String, icon: androidx.compose.ui.graphics.vector.ImageVector, enabled: Boolean, onClick: () -> Unit) {
     Surface(
-        color = if (isActive) TrecRed.copy(0.2f) else Color.White.copy(0.05f),
+        color = if (isActive) MaterialTheme.colorScheme.primary.copy(0.2f) else Color.White.copy(0.05f),
         shape = RoundedCornerShape(50),
-        border = androidx.compose.foundation.BorderStroke(1.dp, if (isActive) TrecRed else Color.Transparent),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (isActive) MaterialTheme.colorScheme.primary else Color.Transparent),
         modifier = Modifier.clip(RoundedCornerShape(50)).clickable(enabled = enabled, onClick = onClick)
     ) {
         Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = if (isActive) TrecRed else Color.Gray, modifier = Modifier.size(14.dp))
+            Icon(icon, null, tint = if (isActive) MaterialTheme.colorScheme.primary else Color.Gray, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(4.dp))
-            Text(text, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = if (isActive) TrecRed else Color.Gray)
+            Text(text, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = if (isActive) MaterialTheme.colorScheme.primary else Color.Gray)
         }
     }
 }
@@ -385,7 +387,7 @@ fun RecordingListItem(
             ) {
                 IconButton(
                     onClick = onPlayClick,
-                    modifier = Modifier.size(44.dp).background(if (isPlaying) TrecRed else Color.White.copy(0.1f), CircleShape)
+                    modifier = Modifier.size(44.dp).background(if (isPlaying) MaterialTheme.colorScheme.primary else Color.White.copy(0.1f), CircleShape)
                 ) {
                     Icon(if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null, tint = Color.White)
                 }
@@ -395,7 +397,7 @@ fun RecordingListItem(
                 Column(Modifier.weight(1f)) {
                     Text(
                         text = item.file.nameWithoutExtension,
-                        color = if (isPlaying) TrecRed else Color.White,
+                        color = if (isPlaying) MaterialTheme.colorScheme.primary else Color.White,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 14.sp,
                         maxLines = 1,
@@ -421,7 +423,7 @@ fun RecordingListItem(
                 LinearProgressIndicator(
                     progress = { progress },
                     modifier = Modifier.fillMaxWidth().height(2.dp),
-                    color = TrecRed,
+                    color = MaterialTheme.colorScheme.primary,
                     trackColor = Color.White.copy(0.08f),
                 )
             }

@@ -80,8 +80,8 @@ import com.trec.music.ui.components.GlassDropdownMenuItem
 import com.trec.music.ui.components.GlassTextButton
 import com.trec.music.ui.components.TrackRow
 import com.trec.music.ui.components.VinylPlaceholder
+import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.ui.theme.TrecBlack
-import com.trec.music.ui.theme.TrecRed
 import com.trec.music.viewmodel.MusicViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -152,6 +152,7 @@ fun LibraryScreen(viewModel: MusicViewModel) {
 // --- ЭКРАН 1: СЕТКА ПЛЕЙЛИСТОВ ---
 @Composable
 fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Unit) {
+    val bottomOverlay = LocalBottomOverlayPadding.current
     var showCreateDialog by remember { mutableStateOf(false) }
     var playlistToRename by remember { mutableStateOf<String?>(null) }
     var playlistToDelete by remember { mutableStateOf<String?>(null) }
@@ -211,11 +212,11 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("Удалить плейлист?", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
-                Text(name, color = TrecRed, fontSize = 16.sp)
+                Text(name, color = MaterialTheme.colorScheme.primary, fontSize = 16.sp)
                 Spacer(Modifier.height(24.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     GlassTextButton("Отмена") { playlistToDelete = null }
-                    GlassButton("Удалить", { viewModel.deletePlaylist(name); playlistToDelete = null }, TrecRed, Modifier.weight(1f))
+                    GlassButton("Удалить", { viewModel.deletePlaylist(name); playlistToDelete = null }, MaterialTheme.colorScheme.primary, Modifier.weight(1f))
                 }
             }
         }
@@ -246,7 +247,7 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
                 Row {
                     IconButton(
                         onClick = { isEditMode = !isEditMode },
-                        modifier = Modifier.background(if (isEditMode) TrecRed else Color.White.copy(0.1f), CircleShape)
+                        modifier = Modifier.background(if (isEditMode) MaterialTheme.colorScheme.primary else Color.White.copy(0.1f), CircleShape)
                     ) {
                         Icon(Icons.Filled.Edit, null, tint = Color.White)
                     }
@@ -271,17 +272,17 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
                 userScrollEnabled = draggingGrid == null,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 200.dp),
+                contentPadding = PaddingValues(bottom = bottomOverlay + 24.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .graphicsLayer { clip = false } // отключаем обрезку на сетке
                     .onGloballyPositioned { coordinates ->
                         gridOrigin = coordinates.positionInRoot()
                     }
-                    .pointerInput(isEditMode) {
+                    .pointerInput(isEditMode, viewModel.userPlaylists.size) {
                         if (!isEditMode) return@pointerInput
 
-                        detectDragGestures(
+                        detectDragGesturesAfterLongPress(
                             onDragStart = { offset ->
                                 val item = gridState.layoutInfo.visibleItemsInfo
                                     .firstOrNull { item ->
@@ -305,14 +306,16 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
                             onDragEnd = {
                                 draggingGrid = null
                                 gridDragOffset = Offset.Zero
+                                viewModel.persistPlaylistOrder()
                             },
                             onDragCancel = {
                                 draggingGrid = null
                                 gridDragOffset = Offset.Zero
+                                viewModel.persistPlaylistOrder()
                             },
                             onDrag = { change, dragAmount ->
                                 change.consume()
-                                val dragState = draggingGrid ?: return@detectDragGestures
+                                val dragState = draggingGrid ?: return@detectDragGesturesAfterLongPress
                                 gridDragOffset += dragAmount
 
                                 val dragCenter = Offset(
@@ -351,7 +354,7 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
                         PlaylistCard(
                             name = "Все треки",
                             count = viewModel.playlist.size,
-                            color = TrecRed,
+                            color = MaterialTheme.colorScheme.primary,
                             isSystem = true,
                             onClick = { if (!isEditMode) onOpenPlaylist("All Tracks") },
                             clickEnabled = !isEditMode
@@ -446,6 +449,7 @@ fun PlaylistEditorScreen(
     playlistName: String,
     onBack: () -> Unit
 ) {
+    val bottomOverlay = LocalBottomOverlayPadding.current
     val context = LocalContext.current
     val density = androidx.compose.ui.platform.LocalDensity.current
     val dragScope = rememberCoroutineScope()
@@ -498,7 +502,9 @@ fun PlaylistEditorScreen(
 
     var isEditMode by remember { mutableStateOf(false) }
     var draggingTrack by remember { mutableStateOf<ListDragState?>(null) }
-    var trackDragOffset by remember { mutableFloatStateOf(0f) }
+    var dragPointerY by remember { mutableFloatStateOf(0f) }
+    var dragTouchOffsetY by remember { mutableFloatStateOf(0f) }
+    var autoScrollDir by remember { mutableIntStateOf(0) } // -1 up, 1 down
     var listOrigin by remember { mutableStateOf(Offset.Zero) }
     var listSize by remember { mutableStateOf(IntSize.Zero) }
     var dragStartIndex by remember { mutableIntStateOf(-1) }
@@ -549,7 +555,7 @@ fun PlaylistEditorScreen(
                     isEditMode = true
                     showSwitchToCustomDialog = false
                     editClickCounter = 0
-                }, TrecRed, Modifier.fillMaxWidth())
+                }, MaterialTheme.colorScheme.primary, Modifier.fillMaxWidth())
             }
         }
     }
@@ -613,7 +619,9 @@ fun PlaylistEditorScreen(
                             isEditMode = !isEditMode
                             if (!isEditMode) {
                                 draggingTrack = null
-                                trackDragOffset = 0f
+                                dragPointerY = 0f
+                                dragTouchOffsetY = 0f
+                                autoScrollDir = 0
                                 dragStartIndex = -1
                             }
                         } else {
@@ -641,10 +649,51 @@ fun PlaylistEditorScreen(
                 val autoScrollThresholdPx = with(density) { 96.dp.toPx() }
                 val autoScrollSpeedPx = with(density) { 20.dp.toPx() }
 
+                fun maybeReorder() {
+                    val dragState = draggingTrack ?: return
+                    val dragCenterY =
+                        (dragPointerY - dragTouchOffsetY) + (dragState.itemSize.height / 2f)
+                    val targetItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                        dragCenterY.toInt() in item.offset..(item.offset + item.size)
+                    }
+
+                    if (targetItem != null &&
+                        targetItem.index != dragState.index &&
+                        targetItem.index < localTracks.size
+                    ) {
+                        val newList = localTracks.toMutableList()
+                        val moved = newList.removeAt(dragState.index)
+                        newList.add(targetItem.index, moved)
+                        localTracks = newList
+
+                        draggingTrack = dragState.copy(
+                            index = targetItem.index,
+                            itemOffset = IntOffset(0, targetItem.offset),
+                            itemSize = IntSize(listSize.width, targetItem.size)
+                        )
+                        vibrateDrag()
+                    }
+                }
+
+                LaunchedEffect(autoScrollDir, draggingTrack?.key) {
+                    if (autoScrollDir == 0 || draggingTrack == null) return@LaunchedEffect
+
+                    while (true) {
+                        val delta = autoScrollDir.toFloat() * autoScrollSpeedPx
+                        val canScroll = (delta < 0 && listState.canScrollBackward) ||
+                                (delta > 0 && listState.canScrollForward)
+                        if (canScroll) {
+                            listState.scrollBy(delta)
+                            maybeReorder()
+                        }
+                        delay(16L)
+                    }
+                }
+
                 LazyColumn(
                     state = listState,
                     userScrollEnabled = draggingTrack == null,
-                    contentPadding = PaddingValues(bottom = 160.dp),
+                    contentPadding = PaddingValues(bottom = bottomOverlay + 24.dp),
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(top = padding.calculateTopPadding())
@@ -671,7 +720,9 @@ fun PlaylistEditorScreen(
                                             itemSize = IntSize(listSize.width, item.size)
                                         )
                                         dragStartIndex = item.index
-                                        trackDragOffset = 0f
+                                        dragPointerY = offset.y
+                                        dragTouchOffsetY = offset.y - item.offset
+                                        autoScrollDir = 0
                                         vibrateDrag()
                                     }
                                 },
@@ -681,55 +732,27 @@ fun PlaylistEditorScreen(
                                         viewModel.moveTrackInPlaylist(playlistName, dragStartIndex, endIndex)
                                     }
                                     draggingTrack = null
-                                    trackDragOffset = 0f
+                                    dragPointerY = 0f
+                                    dragTouchOffsetY = 0f
+                                    autoScrollDir = 0
                                     dragStartIndex = -1
                                 },
                                 onDragCancel = {
                                     draggingTrack = null
-                                    trackDragOffset = 0f
+                                    dragPointerY = 0f
+                                    dragTouchOffsetY = 0f
+                                    autoScrollDir = 0
                                     dragStartIndex = -1
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
-                                    val dragState = draggingTrack ?: return@detectDragGesturesAfterLongPress
-                                    val currentIdx = dragState.index
-
-                                    trackDragOffset += dragAmount.y
-
-                                    val pointerY = change.position.y
-                                    val scrollDelta = when {
-                                        pointerY < autoScrollThresholdPx -> -autoScrollSpeedPx
-                                        pointerY > (listSize.height - autoScrollThresholdPx) -> autoScrollSpeedPx
-                                        else -> 0f
+                                    dragPointerY = change.position.y
+                                    autoScrollDir = when {
+                                        dragPointerY < autoScrollThresholdPx -> -1
+                                        dragPointerY > (listSize.height - autoScrollThresholdPx) -> 1
+                                        else -> 0
                                     }
-                                    if (scrollDelta != 0f) {
-                                        val canScroll = (scrollDelta < 0 && listState.canScrollBackward) ||
-                                                (scrollDelta > 0 && listState.canScrollForward)
-                                        if (canScroll) {
-                                            dragScope.launch { listState.scrollBy(scrollDelta) }
-                                            trackDragOffset += scrollDelta
-                                        }
-                                    }
-
-                                    val dragCenterY = dragState.itemOffset.y + trackDragOffset + (dragState.itemSize.height / 2f)
-                                    val targetItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
-                                        dragCenterY.toInt() in item.offset..(item.offset + item.size)
-                                    }
-
-                                    if (targetItem != null && targetItem.index != currentIdx && targetItem.index < localTracks.size) {
-                                        val newList = localTracks.toMutableList()
-                                        val moved = newList.removeAt(currentIdx)
-                                        newList.add(targetItem.index, moved)
-                                        localTracks = newList
-
-                                        draggingTrack = dragState.copy(
-                                            index = targetItem.index,
-                                            itemOffset = IntOffset(0, targetItem.offset),
-                                            itemSize = IntSize(listSize.width, targetItem.size)
-                                        )
-                                        trackDragOffset = 0f
-                                        vibrateDrag()
-                                    }
+                                    maybeReorder()
                                 }
                             )
                         }
@@ -797,7 +820,7 @@ fun PlaylistEditorScreen(
             val widthDp = with(density) { listSize.width.toDp() }
             val heightDp = with(density) { drag.itemSize.height.toDp() }
             val offsetX = listOrigin.x
-            val offsetY = listOrigin.y + drag.itemOffset.y + trackDragOffset
+            val offsetY = listOrigin.y + (dragPointerY - dragTouchOffsetY)
 
             Box(
                 modifier = Modifier
@@ -921,7 +944,7 @@ fun PlaylistHeader(
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                                 keyboardActions = KeyboardActions(onDone = { keyboardController?.hide() }),
-                                cursorBrush = SolidColor(TrecRed),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                 decorationBox = { innerTextField ->
                                     if (searchQuery.isEmpty()) {
                                         Text(text = "Поиск треков...", color = Color.White.copy(0.5f))
@@ -960,7 +983,7 @@ fun PlaylistHeader(
                                 onClick = onToggleEdit,
                                 modifier = Modifier
                                     .alpha(if (canEdit || isEditMode) 1f else 0.4f)
-                                    .background(if(isEditMode) TrecRed else Color.Transparent, CircleShape)
+                                    .background(if(isEditMode) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape)
                             ) {
                                 Icon(Icons.Filled.Edit, null, tint = Color.White)
                             }
@@ -1009,7 +1032,7 @@ fun PlaylistHeader(
                     Spacer(Modifier.width(12.dp))
                     FilledIconButton(
                         onClick = onPlay,
-                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = TrecRed),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary),
                         modifier = Modifier.size(64.dp)
                     ) {
                         Icon(
@@ -1061,8 +1084,8 @@ fun TrackPickerSheet(viewModel: MusicViewModel, currentPlaylist: String, onDismi
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.White.copy(0.1f),
                     focusedContainerColor = Color.Transparent,
                     unfocusedContainerColor = Color.Transparent
@@ -1124,7 +1147,7 @@ fun TrackPickerSheet(viewModel: MusicViewModel, currentPlaylist: String, onDismi
                         Icon(
                             Icons.Rounded.Add,
                             null,
-                            tint = TrecRed,
+                            tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -1135,7 +1158,7 @@ fun TrackPickerSheet(viewModel: MusicViewModel, currentPlaylist: String, onDismi
                 }
             }
             Spacer(Modifier.height(16.dp))
-            GlassButton("Готово", onDismiss, TrecRed, Modifier.fillMaxWidth())
+            GlassButton("Готово", onDismiss, MaterialTheme.colorScheme.primary, Modifier.fillMaxWidth())
         }
     }
 }
@@ -1199,12 +1222,12 @@ fun PlaylistCard(
                                 leadingIcon = { Icon(Icons.Rounded.Edit, null, tint = Color.White) }
                             )
                             DropdownMenuItem(
-                                text = { Text("Удалить", color = TrecRed) },
+                                text = { Text("Удалить", color = MaterialTheme.colorScheme.primary) },
                                 onClick = {
                                     showMenu = false
                                     onDelete?.invoke()
                                 },
-                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = TrecRed) }
+                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.primary) }
                             )
                         }
                     }
@@ -1266,10 +1289,10 @@ fun TextInputDialog(
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    cursorColor = TrecRed,
-                    focusedBorderColor = TrecRed,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
                     unfocusedBorderColor = Color.Gray,
-                    focusedLabelColor = TrecRed,
+                    focusedLabelColor = MaterialTheme.colorScheme.primary,
                     unfocusedLabelColor = Color.Gray
                 ),
                 modifier = Modifier
@@ -1285,7 +1308,7 @@ fun TextInputDialog(
                         onConfirm(text)
                         keyboardController?.hide()
                     },
-                    TrecRed,
+                    MaterialTheme.colorScheme.primary,
                     Modifier.weight(1f)
                 )
             }
@@ -1324,14 +1347,14 @@ fun EmptyPlaylistView(
                 GlassButton(
                     text = "Добавить треки",
                     onClick = onAdd,
-                    color = TrecRed,
+                    color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.width(200.dp)
                 )
             } else {
                 GlassButton(
                     text = "Выбрать папку",
                     onClick = onAdd,
-                    color = TrecRed,
+                    color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.width(200.dp)
                 )
                 if (onRefresh != null) {

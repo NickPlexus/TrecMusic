@@ -60,7 +60,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
@@ -71,6 +71,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
 import com.trec.music.ui.components.GlassButton
 import com.trec.music.ui.components.GlassDialog
@@ -84,6 +86,7 @@ import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.ui.theme.TrecBlack
 import com.trec.music.viewmodel.MusicViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -277,12 +280,14 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
                     .fillMaxWidth()
                     .graphicsLayer { clip = false } // отключаем обрезку на сетке
                     .onGloballyPositioned { coordinates ->
-                        gridOrigin = coordinates.positionInRoot()
+                        gridOrigin = coordinates.positionInWindow()
                     }
                     .pointerInput(isEditMode, viewModel.userPlaylists.size) {
                         if (!isEditMode) return@pointerInput
 
-                        detectDragGesturesAfterLongPress(
+                        // В режиме редактирования начинаем drag‑reorder сразу (без long‑press),
+                        // иначе на некоторых девайсах жест "долго нажал и потянул" ловится нестабильно.
+                        detectDragGestures(
                             onDragStart = { offset ->
                                 val item = gridState.layoutInfo.visibleItemsInfo
                                     .firstOrNull { item ->
@@ -315,7 +320,7 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
                             },
                             onDrag = { change, dragAmount ->
                                 change.consume()
-                                val dragState = draggingGrid ?: return@detectDragGesturesAfterLongPress
+                                val dragState = draggingGrid ?: return@detectDragGestures
                                 gridDragOffset += dragAmount
 
                                 val dragCenter = Offset(
@@ -362,7 +367,10 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
                     }
                 }
 
-                itemsIndexed(items = playlists) { idx, name ->
+                itemsIndexed(
+                    items = playlists,
+                    key = { _, name -> name }
+                ) { idx, name ->
                     val gridIndex = idx + 1
                     val isDragging = draggingGrid?.index == gridIndex
                     val wiggleModifier = if (isEditMode && !isDragging) Modifier.rotate(rotation) else Modifier
@@ -414,28 +422,32 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
             val heightDp = with(density) { drag.itemSize.height.toDp() }
             val offsetX = gridOrigin.x + drag.itemOffset.x + gridDragOffset.x
             val offsetY = gridOrigin.y + drag.itemOffset.y + gridDragOffset.y
-            Box(
-                modifier = Modifier
-                    .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
-                    .size(widthDp, heightDp)
-                    .zIndex(200f)
-                    .graphicsLayer {
-                        scaleX = 1.08f
-                        scaleY = 1.08f
-                        shadowElevation = 18.dp.toPx()
-                        clip = false
-                    }
+            Popup(
+                alignment = Alignment.TopStart,
+                offset = IntOffset(offsetX.roundToInt(), offsetY.roundToInt()),
+                properties = PopupProperties(focusable = false)
             ) {
-                val color = remember(drag.name) { generateDeterministicColor(drag.name) }
-                val count = viewModel.getPlaylistTracks(drag.name).size
-                PlaylistCard(
-                    name = drag.name,
-                    count = count,
-                    color = color,
-                    isSystem = false,
-                    onClick = {},
-                    clickEnabled = false
-                )
+                Box(
+                    modifier = Modifier
+                        .size(widthDp, heightDp)
+                        .graphicsLayer {
+                            scaleX = 1.08f
+                            scaleY = 1.08f
+                            shadowElevation = 18.dp.toPx()
+                            clip = false
+                        }
+                ) {
+                    val color = remember(drag.name) { generateDeterministicColor(drag.name) }
+                    val count = viewModel.getPlaylistTracks(drag.name).size
+                    PlaylistCard(
+                        name = drag.name,
+                        count = count,
+                        color = color,
+                        isSystem = false,
+                        onClick = {},
+                        clickEnabled = false
+                    )
+                }
             }
         }
     }
@@ -502,8 +514,8 @@ fun PlaylistEditorScreen(
 
     var isEditMode by remember { mutableStateOf(false) }
     var draggingTrack by remember { mutableStateOf<ListDragState?>(null) }
-    var dragPointerY by remember { mutableFloatStateOf(0f) }
-    var dragTouchOffsetY by remember { mutableFloatStateOf(0f) }
+    // Позиция оверлея (top) внутри LazyColumn viewport, чтобы трек следовал за пальцем без рассинхрона.
+    var dragItemTopY by remember { mutableFloatStateOf(0f) }
     var autoScrollDir by remember { mutableIntStateOf(0) } // -1 up, 1 down
     var listOrigin by remember { mutableStateOf(Offset.Zero) }
     var listSize by remember { mutableStateOf(IntSize.Zero) }
@@ -619,8 +631,7 @@ fun PlaylistEditorScreen(
                             isEditMode = !isEditMode
                             if (!isEditMode) {
                                 draggingTrack = null
-                                dragPointerY = 0f
-                                dragTouchOffsetY = 0f
+                                dragItemTopY = 0f
                                 autoScrollDir = 0
                                 dragStartIndex = -1
                             }
@@ -651,8 +662,7 @@ fun PlaylistEditorScreen(
 
                 fun maybeReorder() {
                     val dragState = draggingTrack ?: return
-                    val dragCenterY =
-                        (dragPointerY - dragTouchOffsetY) + (dragState.itemSize.height / 2f)
+                    val dragCenterY = dragItemTopY + (dragState.itemSize.height / 2f)
                     val targetItem = listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
                         dragCenterY.toInt() in item.offset..(item.offset + item.size)
                     }
@@ -678,7 +688,7 @@ fun PlaylistEditorScreen(
                 LaunchedEffect(autoScrollDir, draggingTrack?.key) {
                     if (autoScrollDir == 0 || draggingTrack == null) return@LaunchedEffect
 
-                    while (true) {
+                    while (isActive && autoScrollDir != 0 && draggingTrack != null) {
                         val delta = autoScrollDir.toFloat() * autoScrollSpeedPx
                         val canScroll = (delta < 0 && listState.canScrollBackward) ||
                                 (delta > 0 && listState.canScrollForward)
@@ -699,7 +709,7 @@ fun PlaylistEditorScreen(
                         .padding(top = padding.calculateTopPadding())
                         .graphicsLayer { clip = false } // отключаем обрезку на списке
                         .onGloballyPositioned { coordinates ->
-                            listOrigin = coordinates.positionInRoot()
+                            listOrigin = coordinates.positionInWindow()
                             listSize = coordinates.size
                         }
                         .pointerInput(canDrag) {
@@ -720,8 +730,7 @@ fun PlaylistEditorScreen(
                                             itemSize = IntSize(listSize.width, item.size)
                                         )
                                         dragStartIndex = item.index
-                                        dragPointerY = offset.y
-                                        dragTouchOffsetY = offset.y - item.offset
+                                        dragItemTopY = item.offset.toFloat()
                                         autoScrollDir = 0
                                         vibrateDrag()
                                     }
@@ -732,24 +741,24 @@ fun PlaylistEditorScreen(
                                         viewModel.moveTrackInPlaylist(playlistName, dragStartIndex, endIndex)
                                     }
                                     draggingTrack = null
-                                    dragPointerY = 0f
-                                    dragTouchOffsetY = 0f
+                                    dragItemTopY = 0f
                                     autoScrollDir = 0
                                     dragStartIndex = -1
                                 },
                                 onDragCancel = {
                                     draggingTrack = null
-                                    dragPointerY = 0f
-                                    dragTouchOffsetY = 0f
+                                    dragItemTopY = 0f
                                     autoScrollDir = 0
                                     dragStartIndex = -1
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
-                                    dragPointerY = change.position.y
+                                    dragItemTopY += dragAmount.y
+                                    val dragState = draggingTrack
+                                    val centerY = if (dragState != null) dragItemTopY + (dragState.itemSize.height / 2f) else dragItemTopY
                                     autoScrollDir = when {
-                                        dragPointerY < autoScrollThresholdPx -> -1
-                                        dragPointerY > (listSize.height - autoScrollThresholdPx) -> 1
+                                        centerY < autoScrollThresholdPx -> -1
+                                        centerY > (listSize.height - autoScrollThresholdPx) -> 1
                                         else -> 0
                                     }
                                     maybeReorder()
@@ -820,39 +829,52 @@ fun PlaylistEditorScreen(
             val widthDp = with(density) { listSize.width.toDp() }
             val heightDp = with(density) { drag.itemSize.height.toDp() }
             val offsetX = listOrigin.x
-            val offsetY = listOrigin.y + (dragPointerY - dragTouchOffsetY)
+            val offsetY = listOrigin.y + dragItemTopY
+            val glow by rememberInfiniteTransition(label = "TrackDragGlow").animateFloat(
+                initialValue = 0.35f,
+                targetValue = 0.85f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(700, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "glow"
+            )
 
-            Box(
-                modifier = Modifier
-                    .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
-                    .size(widthDp, heightDp)
-                    .zIndex(200f)
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(
-                                viewModel.dominantColor.copy(alpha = 0.22f),
-                                Color.White.copy(alpha = 0.06f)
-                            )
-                        ),
-                        RoundedCornerShape(12.dp)
-                    )
-                    .border(1.dp, viewModel.dominantColor.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
-                    .graphicsLayer {
-                        scaleX = 1.02f
-                        scaleY = 1.02f
-                        shadowElevation = 12.dp.toPx()
-                        clip = false
-                    }
+            Popup(
+                alignment = Alignment.TopStart,
+                offset = IntOffset(offsetX.roundToInt(), offsetY.roundToInt()),
+                properties = PopupProperties(focusable = false)
             ) {
-                TrackRow(
-                    track = track,
-                    index = drag.index,
-                    viewModel = viewModel,
-                    isSelectionMode = !isSystem,
-                    isEditMode = false,
-                    onClick = {},
-                    onRemoveClick = {}
-                )
+                Box(
+                    modifier = Modifier
+                        .size(widthDp, heightDp)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    viewModel.dominantColor.copy(alpha = 0.16f + 0.10f * glow),
+                                    Color.White.copy(alpha = 0.06f)
+                                )
+                            ),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .border(1.dp, viewModel.dominantColor.copy(alpha = 0.45f + 0.35f * glow), RoundedCornerShape(12.dp))
+                        .graphicsLayer {
+                            scaleX = 1.02f
+                            scaleY = 1.02f
+                            shadowElevation = (12.dp.toPx() + 10.dp.toPx() * glow)
+                            clip = false
+                        }
+                ) {
+                    TrackRow(
+                        track = track,
+                        index = drag.index,
+                        viewModel = viewModel,
+                        isSelectionMode = !isSystem,
+                        isEditMode = false,
+                        onClick = {},
+                        onRemoveClick = {}
+                    )
+                }
             }
         }
     }
@@ -1115,7 +1137,10 @@ fun TrackPickerSheet(viewModel: MusicViewModel, currentPlaylist: String, onDismi
                         }
                     }
                 }
-                items(items = tracksToShow) { track ->
+                items(
+                    items = tracksToShow,
+                    key = { it.uri.toString() } // <-- Обязательный ключ для плавной фильтрации
+                ) { track ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1181,7 +1206,8 @@ fun PlaylistCard(
             .clip(RoundedCornerShape(24.dp))
             .background(Brush.linearGradient(listOf(color.copy(alpha = 0.6f), color.copy(alpha = 0.2f))))
             .border(1.dp, Color.White.copy(0.1f), RoundedCornerShape(24.dp))
-            .clickable(enabled = clickEnabled, onClick = onClick)
+            // В режиме редактирования (drag‑reorder) карточка не должна перехватывать long‑press.
+            .then(if (clickEnabled) Modifier.clickable(onClick = onClick) else Modifier)
             .graphicsLayer { clip = false }
     ) {
         Column(
@@ -1200,7 +1226,7 @@ fun PlaylistCard(
                     tint = Color.White,
                     modifier = Modifier.size(28.dp)
                 )
-                if (!isSystem) {
+                if (!isSystem && clickEnabled) {
                     Box {
                         IconButton(
                             onClick = { showMenu = true },

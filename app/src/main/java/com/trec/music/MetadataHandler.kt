@@ -13,6 +13,7 @@
 package com.trec.music.viewmodel
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -33,6 +34,30 @@ import kotlin.math.abs
 class MetadataHandler(private val vm: MusicViewModel) {
 
     private var colorExtractionJob: Job? = null
+
+    private fun decodeEmbeddedArt(bytes: ByteArray, maxSizePx: Int = 512): Bitmap? {
+        // Встроенные обложки иногда бывают огромными и способны уронить приложение (OOM).
+        // Декодируем с downscale по inSampleSize.
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val w = bounds.outWidth
+            val h = bounds.outHeight
+            if (w <= 0 || h <= 0) return null
+
+            var sample = 1
+            while (w / sample > maxSizePx || h / sample > maxSizePx) sample *= 2
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = sample.coerceAtLeast(1)
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        } catch (_: OutOfMemoryError) {
+            null
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     private fun isNumericTitle(value: String?): Boolean {
         if (value.isNullOrBlank()) return false
@@ -231,52 +256,63 @@ class MetadataHandler(private val vm: MusicViewModel) {
     }
 
     fun updateCurrentTrackInfo(context: Context?, mediaItem: MediaItem?) {
-        // Пропускаем служебные пути (реверс/инструментал)
-        if (mediaItem?.mediaId == vm.reverseTrackPath || mediaItem?.mediaId == vm.instrumentalTrackPath) return
+        // Эта функция вызывается из Player.Listener и должна быть максимально crash-safe.
+        try {
+            // Пропускаем служебные пути (реверс/инструментал)
+            if (mediaItem?.mediaId == vm.reverseTrackPath || mediaItem?.mediaId == vm.instrumentalTrackPath) return
 
-        val title = mediaItem?.mediaMetadata?.title?.toString()
-            ?: mediaItem?.mediaId?.split("/")?.last()?.substringBeforeLast(".") ?: "TREC MUSIC"
-        vm.currentTrackTitle = title
-        vm.duration = vm.player?.duration?.coerceAtLeast(0) ?: 0L
+            val title = mediaItem?.mediaMetadata?.title?.toString()
+                ?: mediaItem?.mediaId?.split("/")?.last()?.substringBeforeLast(".") ?: "TREC MUSIC"
+            vm.currentTrackTitle = title
+            vm.duration = vm.player?.duration?.coerceAtLeast(0) ?: 0L
 
-        val artist = mediaItem?.mediaMetadata?.artist?.toString()?.takeIf { it.isNotBlank() }
-        val album = mediaItem?.mediaMetadata?.albumTitle?.toString()?.takeIf { it.isNotBlank() }
-        vm.currentTrackArtist = artist
-        vm.currentTrackAlbum = album
-        vm.currentCoverUrl = null
-        vm.hasEmbeddedArtwork = false
+            val artist = mediaItem?.mediaMetadata?.artist?.toString()?.takeIf { it.isNotBlank() }
+            val album = mediaItem?.mediaMetadata?.albumTitle?.toString()?.takeIf { it.isNotBlank() }
+            vm.currentTrackArtist = artist
+            vm.currentTrackAlbum = album
+            vm.currentCoverUrl = null
+            vm.hasEmbeddedArtwork = false
 
-        val uriString = mediaItem?.mediaId
-        if (uriString != null) {
-            val uri = uriString.toUri()
-            vm.currentTrackUri = uri
-            vm.normalTrackUri = uri
-            vm.isCurrentTrackFav = vm.favoriteTracks.contains(uriString)
-            vm.instrumentalTrackPath = null
+            val uriString = mediaItem?.mediaId
+            if (uriString != null) {
+                val uri = uriString.toUri()
+                vm.currentTrackUri = uri
+                vm.normalTrackUri = uri
+                vm.isCurrentTrackFav = vm.favoriteTracks.contains(uriString)
+                vm.instrumentalTrackPath = null
 
-            // Start online cover lookup in parallel with embedded-art extraction.
-            vm.refreshCoverArt(vm.currentTrackArtist, vm.currentTrackTitle, vm.currentTrackAlbum)
-
-            if (!vm.brokenTracks.contains(uriString) && context != null) {
-                extractColors(context, uri)
-
-                // Проверяем наличие кэша
-                val revFile = File(context.cacheDir, "rev_${uri.toString().hashCode()}.wav")
-                vm.isReverseReady = revFile.exists() && revFile.length() > 1000
-                val instFile = File(context.cacheDir, "inst_${uri.toString().hashCode()}.wav")
-                vm.isInstrumentalReady = instFile.exists() && instFile.length() > 1000
-
-                vm.backgroundGenJob?.cancel()
-            } else {
-                // Если трек битый или контекста нет
+                // Start online cover lookup in parallel with embedded-art extraction.
                 vm.refreshCoverArt(vm.currentTrackArtist, vm.currentTrackTitle, vm.currentTrackAlbum)
-                if (vm.isDynamicColorEnabled) {
-                    vm.dominantColor = Color.DarkGray
-                    vm.secondaryColor = Color.Black
+
+                if (!vm.brokenTracks.contains(uriString) && context != null) {
+                    extractColors(context, uri)
+
+                    // Проверяем наличие кэша
+                    val revFile = File(context.cacheDir, "rev_${uri.toString().hashCode()}.wav")
+                    vm.isReverseReady = revFile.exists() && revFile.length() > 1000
+                    val instFile = File(context.cacheDir, "inst_${uri.toString().hashCode()}.wav")
+                    vm.isInstrumentalReady = instFile.exists() && instFile.length() > 1000
+
+                    vm.backgroundGenJob?.cancel()
                 } else {
-                    vm.dominantColor = vm.staticColor
-                    vm.secondaryColor = Color.Black
+                    // Трек битый или нет контекста
+                    if (vm.isDynamicColorEnabled) {
+                        vm.dominantColor = Color.DarkGray
+                        vm.secondaryColor = Color.Black
+                    } else {
+                        vm.dominantColor = vm.staticColor
+                        vm.secondaryColor = Color.Black
+                    }
                 }
+            }
+        } catch (_: Throwable) {
+            // Если что-то пошло не так, не падаем: оставляем безопасные значения.
+            if (!vm.isDynamicColorEnabled) {
+                vm.dominantColor = vm.staticColor
+                vm.secondaryColor = Color(0xFF050505)
+            } else {
+                vm.dominantColor = Color.DarkGray
+                vm.secondaryColor = Color.Black
             }
         }
     }
@@ -290,29 +326,50 @@ class MetadataHandler(private val vm: MusicViewModel) {
                 val bytes = ret.embeddedPicture
 
                 if (bytes != null) {
-                    vm.hasEmbeddedArtwork = true
-                    vm.currentCoverUrl = null
-                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    if (bitmap != null) {
-                        // Push embedded artwork into MediaSession metadata so the notification / system player can render it.
-                        vm.setEmbeddedArtworkForCurrentTrack(bitmap, uri.toString())
-                        val p = Palette.from(bitmap).generate()
-                        withContext(Dispatchers.Main) {
-                            if (vm.isDynamicColorEnabled) {
-                                vm.dominantColor = Color(p.getDominantColor(0xFFD50000.toInt()))
-                                vm.secondaryColor = Color(p.getDarkMutedColor(0xFF050505.toInt()))
+                    val bitmap = decodeEmbeddedArt(bytes, maxSizePx = 640)
+                    val palette = if (bitmap != null) {
+                        try {
+                            val maxPaletteSize = 192
+                            val pb = if (bitmap.width > maxPaletteSize || bitmap.height > maxPaletteSize) {
+                                val scale =
+                                    minOf(maxPaletteSize.toFloat() / bitmap.width, maxPaletteSize.toFloat() / bitmap.height)
+                                        .coerceAtMost(1f)
+                                val nw = (bitmap.width * scale).toInt().coerceAtLeast(1)
+                                val nh = (bitmap.height * scale).toInt().coerceAtLeast(1)
+                                Bitmap.createScaledBitmap(bitmap, nw, nh, true)
                             } else {
-                                // ФИКС: Если динамика выключена, форсируем статический цвет
-                                vm.dominantColor = vm.staticColor
-                                vm.secondaryColor = Color(0xFF050505)
+                                bitmap
                             }
+                            try {
+                                Palette.from(pb).generate()
+                            } finally {
+                                if (pb !== bitmap) pb.recycle()
+                            }
+                        } catch (_: Throwable) {
+                            null
+                        }
+                    } else null
+
+                    withContext(Dispatchers.Main) {
+                        vm.hasEmbeddedArtwork = true
+                        vm.currentCoverUrl = null
+                        if (bitmap != null) {
+                            vm.setEmbeddedArtworkForCurrentTrack(bitmap, uri.toString())
+                        }
+                        if (vm.isDynamicColorEnabled && palette != null) {
+                            vm.dominantColor = Color(palette.getDominantColor(0xFFD50000.toInt()))
+                            vm.secondaryColor = Color(palette.getDarkMutedColor(0xFF050505.toInt()))
+                        } else if (!vm.isDynamicColorEnabled) {
+                            vm.dominantColor = vm.staticColor
+                            vm.secondaryColor = Color(0xFF050505)
                         }
                     }
                 } else {
-                    vm.hasEmbeddedArtwork = false
-                    vm.refreshCoverArt(vm.currentTrackArtist, vm.currentTrackTitle, vm.currentTrackAlbum)
+                    // Нет встроенной обложки — просто обновляем флаг и генерируем цвет.
+                    // refreshCoverArt уже был вызван в updateCurrentTrackInfo — не дублируем!
                     val generatedColor = generateColorForTrack(uri.toString())
                     withContext(Dispatchers.Main) {
+                        vm.hasEmbeddedArtwork = false
                         if (vm.isDynamicColorEnabled) {
                             vm.dominantColor = generatedColor
                             vm.secondaryColor = Color(0xFF050505)
@@ -322,10 +379,9 @@ class MetadataHandler(private val vm: MusicViewModel) {
                         }
                     }
                 }
-            } catch (e: Exception) {
-                vm.hasEmbeddedArtwork = false
-                vm.refreshCoverArt(vm.currentTrackArtist, vm.currentTrackTitle, vm.currentTrackAlbum)
+            } catch (_: Throwable) {
                 withContext(Dispatchers.Main) {
+                    vm.hasEmbeddedArtwork = false
                     if (vm.isDynamicColorEnabled) {
                         vm.dominantColor = Color.DarkGray
                         vm.secondaryColor = Color.Black

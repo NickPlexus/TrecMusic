@@ -39,11 +39,23 @@ class DspHandler(private val vm: MusicViewModel) {
 
             vm.equalizer?.release()
             vm.audioSessionId = sessionId
+
+            // ФИКС КРАША (StackOverflow):
+            // Запрещаем создавать эквалайзер на сессии 0 (глобальный микс).
+            // Это вызывает краш на современных Android.
+            if (sessionId == 0) {
+                vm.equalizer = null
+                return
+            }
+
             vm.equalizer = Equalizer(0, sessionId)
             vm.equalizer?.enabled = true
 
+            // Если эквалайзер успешно создался, применяем к нему текущий пресет
             applyPreset(vm.currentPresetName)
+
         } catch (e: Exception) {
+            vm.equalizer = null
             e.printStackTrace()
         }
     }
@@ -56,8 +68,12 @@ class DspHandler(private val vm: MusicViewModel) {
         vm.playbackSpeed = params.speed
         vm.playbackPitch = params.pitch
 
-        if (vm.equalizer == null) setupEqualizer(0) // comment normalized
-        AudioPresets.applyEqualizerSettings(vm.equalizer, name)
+        // ФИКС КРАША: Убрали вызов setupEqualizer(0) отсюда.
+        // Мы больше не уходим в бесконечный цикл.
+        // Настройки применятся к эквалайзеру, только если он уже существует.
+        vm.equalizer?.let { eq ->
+            AudioPresets.applyEqualizerSettings(eq, name)
+        }
     }
 
     fun setSpeed(speed: Float) {
@@ -227,15 +243,24 @@ class DspHandler(private val vm: MusicViewModel) {
         val revPos = (duration - currentPos).coerceIn(0, duration)
 
         vm.reverseTrackPath = file.absolutePath
+
+        // Копируем метаданные оригинального трека, чтобы UI не "моргал"
+        val metadata = MediaMetadata.Builder()
+            .setTitle(vm.currentTrackTitle)
+            .setArtist(vm.currentTrackArtist)
+            .setAlbumTitle(vm.currentTrackAlbum)
+            .build()
+
         val item = MediaItem.Builder()
             .setUri(Uri.fromFile(file))
             .setMediaId(vm.reverseTrackPath!!)
+            .setMediaMetadata(metadata)
             .build()
 
         vm.player?.setMediaItem(item)
-        vm.player?.seekTo(revPos) // comment normalized
+        vm.player?.seekTo(revPos)
         vm.player?.prepare()
-        vm.player?.play() // comment normalized
+        vm.player?.play()
 
         vm.isReversing = true
     }
@@ -244,9 +269,18 @@ class DspHandler(private val vm: MusicViewModel) {
         val pos = vm.player?.currentPosition ?: 0L
 
         vm.instrumentalTrackPath = Uri.fromFile(file).toString()
+
+        // Копируем метаданные оригинального трека
+        val metadata = MediaMetadata.Builder()
+            .setTitle(vm.currentTrackTitle)
+            .setArtist(vm.currentTrackArtist)
+            .setAlbumTitle(vm.currentTrackAlbum)
+            .build()
+
         val item = MediaItem.Builder()
             .setUri(Uri.fromFile(file))
-            .setMediaId(vm.instrumentalTrackPath ?: Uri.fromFile(file).toString()) // Null safety
+            .setMediaId(vm.instrumentalTrackPath ?: Uri.fromFile(file).toString())
+            .setMediaMetadata(metadata)
             .build()
 
         vm.player?.setMediaItem(item)
@@ -254,7 +288,7 @@ class DspHandler(private val vm: MusicViewModel) {
         vm.player?.prepare()
         vm.player?.play()
 
-        applyPreset("Normal") // comment normalized
+        applyPreset("Normal")
     }
 
     private fun restoreTrack(uri: Uri, position: Long) {
@@ -266,17 +300,41 @@ class DspHandler(private val vm: MusicViewModel) {
         val index = tracksToUse.indexOfFirst { it.uri == uri }
 
         if (index != -1) {
-            val mediaItems = tracksToUse.map {
+            // ПРИМЕНЯЕМ ОПТИМИЗАЦИЮ ИЗ MusicViewModel (Окно в 20 треков)
+            val windowSize = 20
+            val endIndex = kotlin.math.min(index + windowSize, tracksToUse.size)
+            val windowTracks = tracksToUse.subList(index, endIndex)
+
+            val mediaItems = windowTracks.map { track ->
+                // Восстанавливаем ПОЛНЫЕ метаданные, чтобы UI не терял обложки и названия
+                val metadata = MediaMetadata.Builder()
+                    .setTitle(track.title)
+                    .setArtist(track.artist)
+                    .setAlbumTitle(track.album)
+                    .build()
+
                 MediaItem.Builder()
-                    .setMediaId(it.uri.toString())
-                    .setUri(it.uri)
-                    .setMediaMetadata(MediaMetadata.Builder().setTitle(it.title).build())
+                    .setMediaId(track.uri.toString())
+                    .setUri(track.uri)
+                    .setMediaMetadata(metadata)
                     .build()
             }
             vm.player?.setMediaItems(mediaItems)
-            vm.player?.seekTo(index, position)
+            // Мы передали subList, где текущий трек стоит первым (индекс 0)
+            vm.player?.seekTo(0, position)
         } else {
-            vm.player?.setMediaItem(MediaItem.fromUri(uri))
+            // Фолбэк, если трека нет в списке
+            val metadata = MediaMetadata.Builder()
+                .setTitle(vm.currentTrackTitle)
+                .setArtist(vm.currentTrackArtist)
+                .setAlbumTitle(vm.currentTrackAlbum)
+                .build()
+            val item = MediaItem.Builder()
+                .setUri(uri)
+                .setMediaId(uri.toString())
+                .setMediaMetadata(metadata)
+                .build()
+            vm.player?.setMediaItem(item)
             vm.player?.seekTo(position)
         }
         vm.player?.prepare()

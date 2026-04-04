@@ -17,12 +17,22 @@
 package com.trec.music
 
 import android.app.Application
+import android.content.Intent
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import com.trec.music.utils.AudioCoverFetcher // Убедись, что файл лежит здесь
+import com.trec.music.utils.CrashShield
 
 class TrecApplication : Application(), ImageLoaderFactory {
+
+    override fun onCreate() {
+        super.onCreate()
+        CrashShield.install(
+            app = this,
+            restartIntent = Intent(this, MainActivity::class.java)
+        )
+    }
 
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)

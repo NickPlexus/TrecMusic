@@ -59,17 +59,19 @@ class PlaybackService : MediaSessionService() {
         // Создаем фабрику, которая внедряет наш AudioProcessor в цепочку
         val renderersFactory = try {
             object : DefaultRenderersFactory(this) {
-                // ФИКС: Убрали аргумент enableOffload, так как компилятор просит 3 аргумента
                 override fun buildAudioSink(
                     context: android.content.Context,
                     enableFloatOutput: Boolean,
                     enableAudioTrackPlaybackParams: Boolean
                 ): AudioSink? {
-                    // Встраиваем наш процессор в DefaultAudioSink
-                    return DefaultAudioSink.Builder()
-                        .setAudioProcessors(arrayOf(trecAudioProcessor))
-                        .setEnableFloatOutput(false) // Отключаем Float для совместимости
-                        .build()
+                    return try {
+                        DefaultAudioSink.Builder()
+                            .setAudioProcessors(arrayOf(trecAudioProcessor))
+                            .setEnableFloatOutput(false)
+                            .build()
+                    } catch (e: Throwable) {
+                        null // ExoPlayer сам создаст стандартный AudioSink
+                    }
                 }
             }.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
                 .setEnableDecoderFallback(true)

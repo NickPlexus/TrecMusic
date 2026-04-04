@@ -71,16 +71,18 @@ fun TrackRow(
     onClick: () -> Unit = {}
 ) {
     val isPlaying = viewModel.currentTrackUri == track.uri
-    // Если играет - берем доминантный цвет, иначе генерируем по хэшу (для стабильности)
     val color = if(isPlaying) viewModel.dominantColor else MaterialTheme.colorScheme.primary
     var showMenu by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
 
-    LaunchedEffect(track.uri) {
-        viewModel.ensureCoverForTrack(track)
-    }
+    // Обложка: читаем из state-cache (recompose когда URL появится) + подгружаем только для видимых строк.
     val coverUrl = viewModel.getCoverUrlForTrack(track)
+    LaunchedEffect(track.uri, coverUrl) {
+        if (coverUrl == null) {
+            viewModel.ensureCoverForTrack(track)
+        }
+    }
 
     // Haptic Feedback (Вибрация)
     val vibrator = remember {

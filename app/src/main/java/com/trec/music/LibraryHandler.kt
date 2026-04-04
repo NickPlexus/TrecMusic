@@ -86,7 +86,9 @@ class LibraryHandler(private val vm: MusicViewModel) {
     fun loadTrackCache() {
         val cached = vm.repository.getTrackCache()
         if (cached.isNotEmpty() && vm.playlist.isEmpty()) {
-            vm.playlist.addAll(cached)
+            // Иногда MediaStore/кэш могут содержать дубли одного и того же Uri → это ломает Lazy списки (key collision).
+            val unique = cached.distinctBy { it.uri.toString() }
+            vm.playlist.addAll(unique)
             vm.playlistUpdateTrigger++
         }
     }
@@ -94,7 +96,8 @@ class LibraryHandler(private val vm: MusicViewModel) {
     fun refreshLibrary(context: Context) {
         val folder = vm.repository.getSavedFolderUri()
         if (folder != null) {
-            vm.viewModelScope.launch { vm.loadFromFolder(context, folder.toUri(), isAutoLoad = true) }
+            // Убрали viewModelScope.launch
+            vm.loadFromFolder(context, folder.toUri(), isAutoLoad = true)
         } else {
             loadFromMediaStore(context)
         }
@@ -116,10 +119,10 @@ class LibraryHandler(private val vm: MusicViewModel) {
                 vm.repository.clearTrackCache()
             }
             if (tracks.isNotEmpty()) {
-                updatePlayerPlaylist(tracks)
+                val used = updatePlayerPlaylist(tracks)
                 // Кэшируем треки на фоне, чтобы не тормозить UI
                 vm.viewModelScope.launch(Dispatchers.IO) {
-                    vm.repository.saveTrackCache(tracks)
+                    vm.repository.saveTrackCache(used)
                 }
             }
             vm.isLoading = false
@@ -136,27 +139,31 @@ class LibraryHandler(private val vm: MusicViewModel) {
             }
 
             if (tracks.isNotEmpty()) {
-                updatePlayerPlaylist(tracks)
+                val used = updatePlayerPlaylist(tracks)
 
                 // Сохранение кэша тоже уводим в фон
                 withContext(Dispatchers.IO) {
-                    vm.repository.saveTrackCache(tracks)
+                    vm.repository.saveTrackCache(used)
                 }
             }
             vm.isLoading = false
         }
     }
 
-    private fun updatePlayerPlaylist(tracks: List<TrecTrackEnhanced>) {
+    private fun updatePlayerPlaylist(tracks: List<TrecTrackEnhanced>): List<TrecTrackEnhanced> {
         // Мы обновляем ТОЛЬКО визуальный список для UI.
+        // Дедуп по Uri важен: одинаковые ключи в LazyColumn/LazyRow приводят к крэшу Compose.
+        val unique = tracks.distinctBy { it.uri.toString() }
         vm.playlist.clear()
-        vm.playlist.addAll(tracks)
+        vm.playlist.addAll(unique)
+        vm.playlistUpdateTrigger++
 
-        // 🚨 ФИКС ФАТАЛЬНОГО КРАША: 🚨
-        // Блок p.setMediaItems(items) удален.
-        // Загрузка тысяч элементов в MediaController при старте вызывала TransactionTooLargeException.
-        // Плеер получит свои треки в момент, когда пользователь нажмет на песню (через playTrackFromPlaylist)
-        // или когда восстановится последняя прослушанная песня (restoreLastTrack).
+        // 🚨 ВАЖНО: НЕ загружаем обложки для всех треков!
+        // Обложки будут загружаться ТОЛЬКО для текущего трека при его воспроизведении
+        // и для треков, которые отображаются на экране (если нужно, то в UI-компонентах)
+
+        // Убираем вызов ensureCoverForTrack для всех треков
+        return unique
     }
 
     fun deleteFileFromDevice(context: Context, track: TrecTrackEnhanced) {

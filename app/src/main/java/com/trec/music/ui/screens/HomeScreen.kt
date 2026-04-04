@@ -1,12 +1,15 @@
 package com.trec.music.ui.screens
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -77,7 +80,18 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+
+private data class UsageCounters(
+    val todayListenMs: Long,
+    val totalListenMs: Long,
+    val todaySessions: Int,
+    val totalSessions: Int,
+    val todayTracksStarted: Int,
+    val totalTracksStarted: Int
+)
 
 @Composable
 fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
@@ -90,12 +104,9 @@ fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
 
     val tracks = viewModel.playlist
     val favoritesCount = viewModel.favoriteTracks.size
-    val totalMinutes = remember(tracks.size, viewModel.playlistUpdateTrigger) {
-        (tracks.sumOf { it.durationMs } / 60000L).toInt()
-    }
-    val recentTracks = remember(tracks.size, viewModel.playlistUpdateTrigger) {
-        tracks.sortedByDescending { it.dateAdded }.take(8)
-    }
+    var totalMinutes by remember { mutableIntStateOf(0) }
+    var recentTracks by remember { mutableStateOf<List<TrecTrackEnhanced>>(emptyList()) }
+    var topPlayedTracks by remember { mutableStateOf<List<Pair<TrecTrackEnhanced, Int>>>(emptyList()) }
 
     var todayListenMs by remember { mutableLongStateOf(viewModel.prefs.getTodayListeningMs()) }
     var totalListenMs by remember { mutableLongStateOf(viewModel.prefs.getTotalListeningMs()) }
@@ -105,23 +116,53 @@ fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
     var totalTracksStarted by remember { mutableIntStateOf(viewModel.prefs.getTotalTracksStarted()) }
     var topPlayed by remember { mutableStateOf(viewModel.prefs.getTopPlayedUris(8)) }
 
-    val topPlayedTracks = remember(topPlayed, tracks, viewModel.playlistUpdateTrigger) {
-        topPlayed.mapNotNull { (uri, count) ->
-            val track = tracks.firstOrNull { it.uri.toString() == uri }
-            track?.let { it to count }
+    // Переносим тяжелую сортировку 1000+ треков в фоновый поток!
+    LaunchedEffect(tracks.size, viewModel.playlistUpdateTrigger, topPlayed) {
+        withContext(Dispatchers.Default) {
+            totalMinutes = (tracks.sumOf { it.durationMs } / 60000L).toInt()
+
+            recentTracks = tracks
+                .sortedByDescending { it.dateAdded }
+                .distinctBy { it.uri.toString() }
+                .take(8)
+
+            topPlayedTracks = topPlayed
+                .mapNotNull { (uri, count) ->
+                    val track = tracks.firstOrNull { it.uri.toString() == uri }
+                    track?.let { it to count }
+                }
+                .distinctBy { it.first.uri.toString() }
+        }
+    }
+
+    // Легкие счетчики можно обновлять чаще, но "Top played" трогать каждую секунду нельзя —
+    // если треков сотни, это начинает лагать (много чтения SharedPreferences + сортировка).
+    LaunchedEffect(Unit) {
+        while (true) {
+            val counters = withContext(Dispatchers.IO) {
+                UsageCounters(
+                    todayListenMs = viewModel.prefs.getTodayListeningMs(),
+                    totalListenMs = viewModel.prefs.getTotalListeningMs(),
+                    todaySessions = viewModel.prefs.getTodayListenSessions(),
+                    totalSessions = viewModel.prefs.getTotalListenSessions(),
+                    todayTracksStarted = viewModel.prefs.getTodayTracksStarted(),
+                    totalTracksStarted = viewModel.prefs.getTotalTracksStarted()
+                )
+            }
+            todayListenMs = counters.todayListenMs
+            totalListenMs = counters.totalListenMs
+            todaySessions = counters.todaySessions
+            totalSessions = counters.totalSessions
+            todayTracksStarted = counters.todayTracksStarted
+            totalTracksStarted = counters.totalTracksStarted
+            delay(if (viewModel.isPlaying) 1000L else 10_000L)
         }
     }
 
     LaunchedEffect(Unit) {
         while (true) {
-            todayListenMs = viewModel.prefs.getTodayListeningMs()
-            totalListenMs = viewModel.prefs.getTotalListeningMs()
-            todaySessions = viewModel.prefs.getTodayListenSessions()
-            totalSessions = viewModel.prefs.getTotalListenSessions()
-            todayTracksStarted = viewModel.prefs.getTodayTracksStarted()
-            totalTracksStarted = viewModel.prefs.getTotalTracksStarted()
-            topPlayed = viewModel.prefs.getTopPlayedUris(8)
-            delay(if (viewModel.isPlaying) 1000L else 10_000L)
+            topPlayed = withContext(Dispatchers.IO) { viewModel.prefs.getTopPlayedUris(8) }
+            delay(10_000L)
         }
     }
 
@@ -171,6 +212,9 @@ fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
                     onFavorites = { navigateToTab("favorites") },
                     onRecorder = { navigateToTab("recorder") },
                     onRadio = { navigateToTab("radio") }
+                    ,
+                    showRecorder = viewModel.isRecorderFeatureEnabled,
+                    showRadio = viewModel.isRadioEnabled
                 )
             }
 
@@ -346,7 +390,9 @@ private fun QuickActions(
     onLibrary: () -> Unit,
     onFavorites: () -> Unit,
     onRecorder: () -> Unit,
-    onRadio: () -> Unit
+    onRadio: () -> Unit,
+    showRecorder: Boolean,
+    showRadio: Boolean
 ) {
     GlassCard {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -355,8 +401,24 @@ private fun QuickActions(
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 item { ActionPill("Библиотека", Icons.Rounded.FolderOpen, accent, onLibrary) }
                 item { ActionPill("Избранное", Icons.Rounded.Favorite, accent, onFavorites) }
-                item { ActionPill("Рекордер", Icons.Outlined.Mic, accent, onRecorder) }
-                item { ActionPill("Радио", Icons.Rounded.Radio, accent, onRadio) }
+                item {
+                    AnimatedVisibility(
+                        visible = showRecorder,
+                        enter = fadeIn(tween(220)) + expandHorizontally(),
+                        exit = fadeOut(tween(180)) + shrinkHorizontally()
+                    ) {
+                        ActionPill("Диктофон", Icons.Outlined.Mic, accent, onRecorder)
+                    }
+                }
+                item {
+                    AnimatedVisibility(
+                        visible = showRadio,
+                        enter = fadeIn(tween(220)) + expandHorizontally(),
+                        exit = fadeOut(tween(180)) + shrinkHorizontally()
+                    ) {
+                        ActionPill("Радио", Icons.Rounded.Radio, accent, onRadio)
+                    }
+                }
             }
         }
     }

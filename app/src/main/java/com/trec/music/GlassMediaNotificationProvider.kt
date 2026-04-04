@@ -10,6 +10,7 @@ import android.os.Handler
 import android.view.View
 import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
+import androidx.core.graphics.drawable.IconCompat
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -78,6 +79,61 @@ class GlassMediaNotificationProvider(private val context: Context) : MediaNotifi
         bindControls(compactView, canPrev, canNext, actionFactory, mediaSession)
         bindControls(bigView, canPrev, canNext, actionFactory, mediaSession)
 
+        // Важно: системный QS/локскрин в новых Android почти всегда показывает НЕ RemoteViews,
+        // а MediaStyle + Notification actions. Поэтому добавляем actions, чтобы изменения были видны.
+        val actions = ArrayList<NotificationCompat.Action>(3)
+
+        if (canPrev) {
+            val prevCmd =
+                if (player.availableCommands.contains(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)) {
+                    Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
+                } else {
+                    Player.COMMAND_SEEK_TO_PREVIOUS
+                }
+            actions.add(
+                actionFactory.createMediaAction(
+                    mediaSession,
+                    IconCompat.createWithResource(context, R.drawable.ic_notif_prev),
+                    "Предыдущий",
+                    prevCmd
+                )
+            )
+        }
+
+        actions.add(
+            actionFactory.createMediaAction(
+                mediaSession,
+                IconCompat.createWithResource(context, playRes),
+                if (showPause) "Пауза" else "Воспроизвести",
+                Player.COMMAND_PLAY_PAUSE
+            )
+        )
+
+        if (canNext) {
+            val nextCmd =
+                if (player.availableCommands.contains(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)) {
+                    Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM
+                } else {
+                    Player.COMMAND_SEEK_TO_NEXT
+                }
+            actions.add(
+                actionFactory.createMediaAction(
+                    mediaSession,
+                    IconCompat.createWithResource(context, R.drawable.ic_notif_next),
+                    "Следующий",
+                    nextCmd
+                )
+            )
+        }
+
+        val style = MediaStyleNotificationHelper.DecoratedMediaCustomViewStyle(mediaSession)
+        // Показываем все доступные actions в компактном виде (до 3).
+        when (actions.size) {
+            3 -> style.setShowActionsInCompactView(0, 1, 2)
+            2 -> style.setShowActionsInCompactView(0, 1)
+            1 -> style.setShowActionsInCompactView(0)
+        }
+
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.media3_notification_small_icon)
             .setContentTitle(title)
@@ -98,7 +154,10 @@ class GlassMediaNotificationProvider(private val context: Context) : MediaNotifi
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .setOngoing(true)
-            .setStyle(MediaStyleNotificationHelper.DecoratedMediaCustomViewStyle(mediaSession))
+            .setStyle(style)
+
+        // Дублируем действия в Notification actions (их показывают QS/локскрин).
+        actions.forEach { builder.addAction(it) }
 
         val bitmapFuture = mediaSession.bitmapLoader.loadBitmapFromMetadata(metadata)
         if (bitmapFuture != null) {

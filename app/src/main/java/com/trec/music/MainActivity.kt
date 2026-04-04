@@ -26,8 +26,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,14 +42,21 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.trec.music.ui.components.MiniPlayer
 import com.trec.music.ui.components.RecordingMiniPlayer
+import com.trec.music.ui.components.GlassButton
+import com.trec.music.ui.components.GlassDialog
+import com.trec.music.ui.components.GlassTextButton
 import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.ui.navigation.BottomNavigationBar
 import com.trec.music.ui.screens.*
 import com.trec.music.ui.theme.TrecBlack
 import com.trec.music.ui.theme.TrecMusicTheme
 import com.trec.music.utils.DebugConsoleWindow
+import com.trec.music.utils.CrashShield
 import com.trec.music.viewmodel.MusicViewModel
 import com.trec.music.viewmodel.RecorderViewModel
+import android.widget.Toast
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,12 +64,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        
-        // FLAG_KEEP_SCREEN_ON - будет обновляться при изменении настройки
-        val viewModel = androidx.lifecycle.ViewModelProvider(this).get(MusicViewModel::class.java)
-        if (viewModel.keepScreenOn) {
-            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
         
         setContent {
             MainAppStructure()
@@ -74,6 +77,19 @@ fun MainAppStructure() {
     val musicViewModel: MusicViewModel = viewModel()
     val recorderViewModel: RecorderViewModel = viewModel()
     val context = LocalContext.current
+
+    val clipboard = LocalClipboardManager.current
+    var lastCrash by remember { mutableStateOf<String?>(null) }
+    var showCrashDialog by remember { mutableStateOf(false) }
+
+    // Важно: читаем crash log один раз на старт Activity.
+    // Держим в состоянии, чтобы:
+    // 1) текст можно было копировать
+    // 2) после закрытия диалога лог не "терялся" внутри текущего запуска
+    LaunchedEffect(Unit) {
+        lastCrash = CrashShield.consumeLastCrash(context)
+        showCrashDialog = lastCrash != null
+    }
     
     // Обновляем FLAG_KEEP_SCREEN_ON при изменении настройки
     SideEffect {
@@ -106,7 +122,9 @@ fun MainAppStructure() {
 
     // Уведомления (Android 13+): нужны для стабильного фонового воспроизведения (MediaSessionService).
     val notificationPermissionLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            musicViewModel.onNotificationPermissionResult(granted)
+        }
     var askedNotifications by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -134,6 +152,16 @@ fun MainAppStructure() {
         } else {
             askedNotifications = true
         }
+    }
+
+    // Запрос уведомлений по требованию (когда пользователь нажал Play/трек, а разрешение выключено).
+    LaunchedEffect(musicViewModel.requestNotificationPermission) {
+        if (!musicViewModel.requestNotificationPermission) return@LaunchedEffect
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            musicViewModel.onNotificationPermissionResult(true)
+            return@LaunchedEffect
+        }
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     var showFullPlayer by remember { mutableStateOf(false) }
@@ -168,6 +196,59 @@ fun MainAppStructure() {
                     .fillMaxSize()
                     .background(TrecBlack)
             ) {
+                val crashText = lastCrash
+                if (showCrashDialog && crashText != null) {
+                    GlassDialog(onDismiss = { showCrashDialog = false }) {
+                        val scrollState = rememberScrollState()
+                        Column(horizontalAlignment = Alignment.Start) {
+                            Text(
+                                "Приложение восстановилось после ошибки",
+                                color = Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            Text(
+                                "Если это повторяется — напиши в поддержку и приложи текст ниже.",
+                                color = Color.White.copy(alpha = 0.75f),
+                                fontSize = 13.sp
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 120.dp, max = 280.dp)
+                                    .background(Color.White.copy(alpha = 0.06f), shape = MaterialTheme.shapes.medium)
+                                    .padding(12.dp)
+                            ) {
+                                Text(
+                                    text = crashText,
+                                    color = Color.White.copy(alpha = 0.8f),
+                                    fontSize = 11.sp,
+                                    lineHeight = 14.sp
+                                    ,
+                                    modifier = Modifier.verticalScroll(scrollState)
+                                )
+                            }
+                            Spacer(Modifier.height(14.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                GlassTextButton("Копировать") {
+                                    if (crashText.isNotBlank()) {
+                                        clipboard.setText(AnnotatedString(crashText))
+                                        Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                GlassButton(
+                                    text = "Понятно",
+                                    onClick = { showCrashDialog = false },
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // СЛОЙ 1: КОНТЕНТ (NavHost)
                 Box(modifier = Modifier.fillMaxSize()) {
                     if (hasPermissions) {
@@ -225,40 +306,38 @@ fun MainAppStructure() {
                         BottomNavigationBar(navController, musicViewModel)
                     }
 
-                    if (hasRecordingMini) {
-                        val offset = bottomNavHeight + if (hasTrackMini) (miniPlayerHeight + miniPlayerGap) else 0.dp
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = offset)
-                                .padding(horizontal = 8.dp)
+                    // --- RECORDING MINI PLAYER ---
+                    val offset = bottomNavHeight + if (hasTrackMini) (miniPlayerHeight + miniPlayerGap) else 0.dp
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = offset)
+                            .padding(horizontal = 8.dp)
+                    ) {
+                        AnimatedVisibility(
+                            visible = hasRecordingMini, // <-- Флаг здесь! Убрали внешний if
+                            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
                         ) {
-                            AnimatedVisibility(
-                                visible = true,
-                                enter = slideInVertically { it } + fadeIn(),
-                                exit = slideOutVertically { it } + fadeOut()
-                            ) {
-                                RecordingMiniPlayer(recorderViewModel) {
-                                    navController.navigate("recorder")
-                                }
+                            RecordingMiniPlayer(recorderViewModel) {
+                                navController.navigate("recorder")
                             }
                         }
                     }
 
-                    if (hasTrackMini) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = bottomNavHeight)
-                                .padding(horizontal = 8.dp)
+                    // --- MUSIC MINI PLAYER ---
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = bottomNavHeight)
+                            .padding(horizontal = 8.dp)
+                    ) {
+                        AnimatedVisibility(
+                            visible = hasTrackMini, // <-- Флаг здесь! Убрали внешний if
+                            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
                         ) {
-                            AnimatedVisibility(
-                                visible = true,
-                                enter = slideInVertically { it } + fadeIn(),
-                                exit = slideOutVertically { it } + fadeOut()
-                            ) {
-                                MiniPlayer(musicViewModel) { showFullPlayer = true }
-                            }
+                            MiniPlayer(musicViewModel) { showFullPlayer = true }
                         }
                     }
                 }

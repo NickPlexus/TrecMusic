@@ -1,11 +1,6 @@
 // ui/screens/FullPlayerOverlay.kt
 //
 // ТИП: UI Screen (Overlay)
-//
-// ИЗМЕНЕНИЯ:
-// 1. Granular DSP Visibility: Кнопки (Reverse, Karaoke, Speed) теперь скрываются,
-//    если соответствующие функции отключены в настройках.
-// 2. Lyrics Integration: Добавлена кнопка и диалог для текстов песен.
 
 package com.trec.music.ui.screens
 
@@ -16,7 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,7 +36,6 @@ import androidx.compose.ui.unit.sp
 import androidx.media3.common.Player
 import coil.compose.AsyncImage
 import com.trec.music.ui.components.*
-import com.trec.music.ui.components.SpaceVisualizer
 import com.trec.music.utils.formatTime
 import com.trec.music.viewmodel.MusicViewModel
 import kotlinx.coroutines.Dispatchers
@@ -50,7 +44,7 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FullPlayerOverlay(viewModel: MusicViewModel, onClose: () -> Unit) {
-    val animatedDominantColor by animateColorAsState(targetValue = viewModel.dominantColor, animationSpec = tween(1500))
+    val animatedDominantColor by animateColorAsState(targetValue = viewModel.dominantColor, animationSpec = tween(1500), label = "color")
     val context = LocalContext.current
     var showInfoDialog by remember { mutableStateOf(false) }
 
@@ -89,13 +83,23 @@ fun FullPlayerOverlay(viewModel: MusicViewModel, onClose: () -> Unit) {
                 .padding(bottom = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // ВЕРХНЯЯ ПАНЕЛЬ СО СВАЙПОМ
             Box(
                 Modifier
                     .fillMaxWidth()
                     .height(60.dp)
                     .pointerInput(Unit) {
-                        detectDragGestures { _, dragAmount ->
-                            if (dragAmount.y > 30) onClose()
+                        var dragOffset = 0f
+                        detectVerticalDragGestures(
+                            onDragEnd = { dragOffset = 0f },
+                            onDragCancel = { dragOffset = 0f }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            dragOffset += dragAmount
+                            if (dragOffset > 150f) {
+                                onClose()
+                                dragOffset = 0f
+                            }
                         }
                     },
                 contentAlignment = Alignment.Center
@@ -133,16 +137,27 @@ fun FullPlayerOverlay(viewModel: MusicViewModel, onClose: () -> Unit) {
                 }
             }
 
+            // ЦЕНТРАЛЬНАЯ ОБЛАСТЬ С ОБЛОЖКОЙ/ВИНИЛОМ (И СВАЙПОМ)
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .pointerInput(Unit) {
-                        detectDragGestures { _, dragAmount -> if (dragAmount.y > 60) onClose() }
+                        var dragOffset = 0f
+                        detectVerticalDragGestures(
+                            onDragEnd = { dragOffset = 0f },
+                            onDragCancel = { dragOffset = 0f }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            dragOffset += dragAmount
+                            if (dragOffset > 150f) {
+                                onClose()
+                                dragOffset = 0f
+                            }
+                        }
                     },
                 contentAlignment = Alignment.Center
             ) {
-                // Космический эффект позади пластинки
                 if (viewModel.isVinylModeEnabled) {
                     SpaceVisualizer(
                         isPlaying = viewModel.isPlaying,
@@ -152,7 +167,7 @@ fun FullPlayerOverlay(viewModel: MusicViewModel, onClose: () -> Unit) {
                             .padding(32.dp)
                     )
                 }
-                
+
                 if (viewModel.isVinylModeEnabled) {
                     VinylDisk(
                         viewModel = viewModel,
@@ -184,6 +199,7 @@ fun FullPlayerOverlay(viewModel: MusicViewModel, onClose: () -> Unit) {
                 }
             }
 
+            // ПАНЕЛЬ УПРАВЛЕНИЯ
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                 color = Color.White.copy(alpha = 0.05f),
@@ -217,10 +233,10 @@ fun FullPlayerOverlay(viewModel: MusicViewModel, onClose: () -> Unit) {
                                 modifier = Modifier.size(28.dp)
                             )
                         }
-                        
-                        IconButton(onClick = { 
+
+                        IconButton(onClick = {
                             viewModel.loadLyrics()
-                            viewModel.showLyricsDialog = true 
+                            viewModel.showLyricsDialog = true
                         }) {
                             Icon(
                                 Icons.Rounded.MusicNote,
@@ -234,8 +250,7 @@ fun FullPlayerOverlay(viewModel: MusicViewModel, onClose: () -> Unit) {
                     Spacer(Modifier.height(20.dp))
 
                     TimeControls(
-                        currentPosition = viewModel.currentPosition,
-                        duration = viewModel.duration,
+                        viewModel = viewModel,
                         dominantColor = animatedDominantColor,
                         onSeek = { pos ->
                             viewModel.seekTo(pos)
@@ -353,13 +368,15 @@ fun FullPlayerOverlay(viewModel: MusicViewModel, onClose: () -> Unit) {
 
 @Composable
 private fun TimeControls(
-    currentPosition: Long,
-    duration: Long,
+    viewModel: MusicViewModel,
     dominantColor: Color,
     onSeek: (Long) -> Unit,
     onSeekStart: () -> Unit,
     onSeekEnd: () -> Unit
 ) {
+    val currentPosition = viewModel.currentPosition
+    val duration = viewModel.duration
+
     var isDragging by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableFloatStateOf(0f) }
 
@@ -387,6 +404,15 @@ private fun TimeControls(
 
 @Composable
 fun GlassyControlBtn(onClick: () -> Unit, content: @Composable () -> Unit) {
-    Box(modifier = Modifier.size(50.dp).clip(CircleShape).background(Color.White.copy(0.08f)).border(1.dp, Color.White.copy(0.1f), CircleShape).clickable(onClick = onClick), contentAlignment = Alignment.Center) { content() }
+    Box(
+        modifier = Modifier
+            .size(50.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(0.08f))
+            .border(1.dp, Color.White.copy(0.1f), CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
+    }
 }
-

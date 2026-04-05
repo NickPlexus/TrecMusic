@@ -167,7 +167,6 @@ class LibraryHandler(private val vm: MusicViewModel) {
     }
 
     fun deleteFileFromDevice(context: Context, track: TrecTrackEnhanced) {
-        // Удаление файла — это дисковая операция, убираем ее из Main Thread
         vm.viewModelScope.launch {
             val success = withContext(Dispatchers.IO) {
                 try {
@@ -188,14 +187,19 @@ class LibraryHandler(private val vm: MusicViewModel) {
             if (success) {
                 vm.playlist.remove(track)
 
+                // Снимаем снепшот ДО перехода в IO, иначе ConcurrentModificationException
+                val playlistsSnapshot = vm.userPlaylists.toList()
+                val trackCacheSnapshot = vm.playlist.toList()
+                val trackUriStr = track.uri.toString()
+
                 withContext(Dispatchers.IO) {
-                    vm.userPlaylists.forEach { plName ->
+                    playlistsSnapshot.forEach { plName ->
                         val tracks = vm.repository.getTracksInPlaylist(plName)
-                        if (tracks.contains(track.uri.toString())) {
-                            vm.repository.removeTrackFromPlaylist(plName, track.uri.toString())
+                        if (tracks.contains(trackUriStr)) {
+                            vm.repository.removeTrackFromPlaylist(plName, trackUriStr)
                         }
                     }
-                    vm.repository.saveTrackCache(vm.playlist)
+                    vm.repository.saveTrackCache(trackCacheSnapshot)
                 }
 
                 vm.playlistUpdateTrigger++

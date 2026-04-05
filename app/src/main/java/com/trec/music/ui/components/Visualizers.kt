@@ -90,7 +90,6 @@ fun RippleVinylVisualizer(
     accent: Color,
     modifier: Modifier = Modifier
 ) {
-    // Вращение пластинки
     val infiniteTransition = rememberInfiniteTransition(label = "VinylSpin")
     val rotation by infiniteTransition.animateFloat(
         initialValue = 0f, targetValue = 360f,
@@ -98,32 +97,39 @@ fun RippleVinylVisualizer(
         label = "Rot"
     )
 
-    // Список активных волн (прогресс от 0.0 до 1.0)
-    val waves = remember { mutableStateListOf<Float>() }
+    // 1. ИСПОЛЬЗУЕМ ОБЫЧНЫЙ СПИСОК (экономит кучу CPU, так как не дергает стейты)
+    val waves = remember { mutableListOf<Float>() }
 
-    // Логика добавления волн (реакция на громкость)
-    LaunchedEffect(amplitude) {
-        // Порог чувствительности (чтобы не реагировать на тишину)
-        if (isRecording && amplitude > 800) {
-            // Добавляем новую волну, если список пуст или последняя волна немного отошла
-            if (waves.isEmpty() || waves.last() > 0.15f) {
-                waves.add(0f)
-            }
-        }
-    }
+    // 2. МИКРО-ТРИГГЕР для перерисовки Canvas 60 раз в секунду
+    var frameTick by remember { mutableIntStateOf(0) }
 
-    // Анимационный цикл (движение волн)
+    // 3. Читаем громкость "на лету", БЕЗ перезапуска корутин!
+    val currentAmp by rememberUpdatedState(amplitude)
+
     LaunchedEffect(isRecording) {
         while (isActive) {
             if (isRecording) {
-                // Двигаем все существующие волны
-                for (i in waves.indices) {
-                    waves[i] += 0.01f // Скорость расхождения
+                // Добавляем волну, если звук громкий
+                if (currentAmp > 800) {
+                    if (waves.isEmpty() || waves.last() > 0.15f) {
+                        waves.add(0f)
+                    }
                 }
-                // Удаляем те, что ушли за край (стали >= 1.0)
+
+                // Двигаем волны
+                for (i in waves.indices) {
+                    waves[i] += 0.01f
+                }
+                // Удаляем старые
                 waves.removeAll { it >= 1f }
+
+                // Триггерим перерисовку Canvas
+                frameTick++
             } else {
-                if (waves.isNotEmpty()) waves.clear()
+                if (waves.isNotEmpty()) {
+                    waves.clear()
+                    frameTick++
+                }
             }
             delay(16) // ~60 FPS
         }
@@ -132,6 +138,8 @@ fun RippleVinylVisualizer(
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         // СЛОЙ 1: ВОЛНЫ (Под пластинкой)
         Canvas(modifier = Modifier.fillMaxSize()) {
+            val tick = frameTick // Обязательно читаем стейт внутри Canvas, чтобы он обновлялся
+
             val cx = size.width / 2
             val cy = size.height / 2
             val maxRadius = size.width / 2
@@ -139,15 +147,12 @@ fun RippleVinylVisualizer(
 
             waves.forEach { progress ->
                 val currentRadius = vinylRadius + (maxRadius - vinylRadius) * progress
-
-                // Мягкое затухание
-                val alpha = (1f - progress) * 0.25f // Максимум 25% прозрачности (очень мягко)
+                val alpha = (1f - progress) * 0.25f
 
                 drawCircle(
                     color = accent.copy(alpha = alpha),
                     radius = currentRadius,
                     center = Offset(cx, cy),
-                    // ОЧЕНЬ ТОЛСТАЯ ЛИНИЯ для эффекта размытия/волны
                     style = Stroke(width = 40.dp.toPx())
                 )
             }

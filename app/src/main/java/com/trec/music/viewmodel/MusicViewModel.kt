@@ -134,6 +134,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     var isLoadingLyrics by mutableStateOf(false)
     var lyricsError by mutableStateOf<String?>(null)
     var showLyricsDialog by mutableStateOf(false)
+    private var lyricsJob: Job? = null  // ← добавили
 
     // ==========================================
     // STATE: VISUALS & SETTINGS
@@ -324,6 +325,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     var isCurrentTrackFav by mutableStateOf(false)
     var userPlaylists = mutableStateListOf<String>()
     var currentPlaylistFilter by mutableStateOf<String?>(null)
+    var favoritesContext: List<TrecTrackEnhanced>? = null  // ← добавить
 
     // --- STATE: DSP EFFECTS ---
     var playbackSpeed by mutableFloatStateOf(1.0f)
@@ -666,20 +668,27 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // PLAYBACK LOGIC
     // ==========================================
     private fun buildSafeMediaItem(track: TrecTrackEnhanced): MediaItem {
-        val metadata = androidx.media3.common.MediaMetadata.Builder()
+        val key = coverCacheKey(track.artist, track.title, track.album)
+        // Берём URL из памяти, или из постоянного кэша если в памяти ещё нет
+        val cachedUrl = coverUrlCache[key] ?: prefs.getCachedCoverUrl(key)
+
+        val metaBuilder = MediaMetadata.Builder()
             .setTitle(track.title)
             .setArtist(track.artist)
             .setAlbumTitle(track.album)
-            .build()
+
+        if (!cachedUrl.isNullOrBlank()) {
+            // URL уже в кэше → вшиваем сразу, replaceMediaItem не нужен
+            metaBuilder.setArtworkUri(cachedUrl.toUri())
+        }
+        // Если URL нет — встроенную обложку Media3 достанет из файла сам
 
         return MediaItem.Builder()
             .setMediaId(track.uri.toString())
             .setUri(track.uri)
-            .setMediaMetadata(metadata)
+            .setMediaMetadata(metaBuilder.build())
             .build()
     }
-
-    private var playlistLoadJob: Job? = null
 
     fun playTrackFromPlaylist(playlistName: String, index: Int) {
         runWithNotificationPermission {
@@ -691,6 +700,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
                 val safeIndex = index.coerceIn(0, tracksToPlay.lastIndex)
                 currentPlaylistFilter = if (playlistName == "All Tracks") null else playlistName
+                favoritesContext = null  // ← сбрасываем контекст избранного
                 isReversing = false; isGeneratingReverse = false; instrumentalTrackPath = null
                 backgroundGenJob?.cancel()
                 applyPreset("Normal")
@@ -771,6 +781,52 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun playFromFavorites(favTracks: List<TrecTrackEnhanced>, startIndex: Int, shuffle: Boolean = false) {
+        runWithNotificationPermission {
+            try {
+                PlaybackCoordinator.pauseRecorder()
+                if (favTracks.isEmpty()) return@runWithNotificationPermission
+
+                val tracksToPlay = if (shuffle) favTracks.shuffled() else favTracks
+                val safeIndex = if (shuffle) 0 else startIndex.coerceIn(0, tracksToPlay.lastIndex)
+
+                // Сохраняем контекст — skip next/prev будет ходить по избранному
+                favoritesContext = tracksToPlay
+                currentPlaylistFilter = null
+                isReversing = false
+                instrumentalTrackPath = null
+                backgroundGenJob?.cancel()
+                applyPreset("Normal")
+
+                val endIndex = min(safeIndex + 20, tracksToPlay.size)
+                val windowTracks = tracksToPlay.subList(safeIndex, endIndex)
+                val mediaItems = windowTracks.map { buildSafeMediaItem(it) }
+
+                val p = player ?: return@runWithNotificationPermission
+                p.setMediaItems(mediaItems)
+                if (shuffle) {
+                    p.shuffleModeEnabled = true
+                    shuffleMode = true
+                }
+                p.seekTo(0, 0)
+                p.prepare()
+                p.play()
+
+                val track = tracksToPlay[safeIndex]
+                currentTrackUri = track.uri
+                normalTrackUri = track.uri
+                currentTrackTitle = track.title
+                currentCoverUrl = null
+                hasEmbeddedArtwork = false
+                currentTrackArtist = track.artist
+                currentTrackAlbum = track.album
+                refreshCoverArt(currentTrackArtist, currentTrackTitle, currentTrackAlbum)
+            } catch (t: Throwable) {
+                t.printStackTrace()
+            }
+        }
+    }
+
     fun togglePlay() {
         if (isPlaying) {
             player?.pause()
@@ -811,13 +867,23 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleCustomTrackSkip(direction: Int) {
-        val tracks = if (currentPlaylistFilter != null) libraryHandler.getPlaylistTracks(currentPlaylistFilter!!) else playlist.toList()
+        // Приоритет: избранное > плейлист > вся библиотека
+        val tracks = favoritesContext
+            ?: if (currentPlaylistFilter != null) libraryHandler.getPlaylistTracks(currentPlaylistFilter!!)
+            else playlist.toList()
         val curUri = normalTrackUri ?: currentTrackUri
         val idx = tracks.indexOfFirst { it.uri == curUri }
         if (idx != -1) {
-            var nextIdx = idx + direction
-            if (nextIdx >= tracks.size) nextIdx = 0
-            if (nextIdx < 0) nextIdx = tracks.size - 1
+            val nextIdx = if (shuffleMode && direction == 1) {
+                // При shuffle вперёд — случайный трек (кроме текущего)
+                if (tracks.size > 1) (0 until tracks.size).filter { it != idx }.random()
+                else idx
+            } else {
+                var i = idx + direction
+                if (i >= tracks.size) i = 0
+                if (i < 0) i = tracks.size - 1
+                i
+            }
             playTrackFromPlaylist(currentPlaylistFilter ?: "All Tracks", nextIdx)
         }
     }
@@ -897,11 +963,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- LYRICS METHODS ---
     fun loadLyrics() {
+        lyricsJob?.cancel()  // ← отменяем предыдущий запрос
         isLoadingLyrics = true
         lyricsError = null
         currentLyrics = null
 
-        viewModelScope.launch {
+        lyricsJob = viewModelScope.launch {
             val uriString = currentTrackUri?.toString()
             val track = playlist.find { it.uri.toString() == uriString }
                 ?: playlist.find { it.title == currentTrackTitle }
@@ -928,6 +995,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearLyrics() {
+        lyricsJob?.cancel()
         currentLyrics = null
         lyricsError = null
         isLoadingLyrics = false
@@ -1057,12 +1125,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setEmbeddedArtworkForCurrentTrack(bitmap: Bitmap, activeUri: String) {
-        viewModelScope.launch(Dispatchers.Default) {
-            val bytes = bitmapToJpegBytes(bitmap)
-            withContext(Dispatchers.Main) {
-                updateCurrentMediaItemArtwork(url = null, artworkData = bytes, activeUri = activeUri)
-            }
-        }
+        // updateCurrentMediaItemArtwork убрана (была причиной StackOverflow).
+        // Встроенную обложку Media3 загружает из файла самостоятельно.
+        // Функция оставлена чтобы не менять вызовы в MetadataHandler.
     }
 
     private fun bitmapToJpegBytes(bitmap: Bitmap, maxSizePx: Int = 512, quality: Int = 86): ByteArray? {
@@ -1260,27 +1325,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun updateCurrentMediaItemArtwork(url: String?, artworkData: ByteArray? = null, activeUri: String?) {
-        val p = player ?: return
-        val idx = p.currentMediaItemIndex
-        val cur = p.currentMediaItem ?: return
-        if (cur.mediaId != activeUri) return
-
-        val metaBuilder = cur.mediaMetadata.buildUpon()
-
-        if (!url.isNullOrBlank()) {
-            // Если есть ссылка на кэш/интернет — используем её. Это не грузит память!
-            metaBuilder.setArtworkUri(url.toUri())
-            // Очищаем тяжелые байты на всякий случай
-            metaBuilder.setArtworkData(null, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-        } else if (artworkData != null) {
-            // Если ссылки нет, но это локальный файл со встроенной обложкой — используем байты
-            metaBuilder.setArtworkData(artworkData, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-        }
-
-        val updated = cur.buildUpon().setMediaMetadata(metaBuilder.build()).build()
-        try {
-            p.replaceMediaItem(idx, updated)
-        } catch (_: Exception) {}
+        // replaceMediaItem оборачивает timeline в новый слой при каждом вызове.
+        // После нескольких десятков треков накапливаются сотни обёрток → StackOverflow.
+        // UI получает обложки через Coil + currentCoverUrl — replaceMediaItem не нужен.
+        // Встроенные обложки в уведомлении Media3 загружает из файла самостоятельно.
     }
 
     fun restoreLastTrack() {
@@ -1295,19 +1343,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             val windowTracks = playlist.subList(startIndex, endIndex + 1)
             val playerIndex = 0  // текущий трек будет первым в списке
 
-            val mediaItems = windowTracks.map {
-                val metadata = androidx.media3.common.MediaMetadata.Builder()
-                    .setTitle(it.title)
-                    .setArtist(it.artist)
-                    .setAlbumTitle(it.album)
-                    .build()
-
-                MediaItem.Builder()
-                    .setMediaId(it.uri.toString())
-                    .setUri(it.uri)
-                    .setMediaMetadata(metadata)
-                    .build()
-            }
+            val mediaItems = windowTracks.map { buildSafeMediaItem(it) }
 
             player.setMediaItems(mediaItems)
             // ИСПРАВЛЕНО: используем playerIndex (0), а не глобальный index

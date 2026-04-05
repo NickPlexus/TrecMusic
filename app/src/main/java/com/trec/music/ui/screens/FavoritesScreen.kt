@@ -46,7 +46,9 @@ fun FavoritesScreen(viewModel: MusicViewModel) {
     // Умная фильтрация
     val favTracks by remember(viewModel.playlist, viewModel.favoriteTracks) {
         derivedStateOf {
-            viewModel.playlist.filter { viewModel.favoriteTracks.contains(it.uri.toString()) }
+            viewModel.playlist
+                .filter { viewModel.favoriteTracks.contains(it.uri.toString()) }
+                .distinctBy { it.uri.toString() }
         }
     }
 
@@ -135,12 +137,7 @@ fun FavoritesScreen(viewModel: MusicViewModel) {
                         Button(
                             onClick = {
                                 if (favTracks.isNotEmpty()) {
-                                    val randomFav = favTracks.random()
-                                    val indexInMain = viewModel.playlist.indexOf(randomFav)
-                                    if (indexInMain != -1) {
-                                        viewModel.toggleShuffle()
-                                        viewModel.playTrackAtIndex(indexInMain)
-                                    }
+                                    viewModel.playFromFavorites(favTracks, 0, shuffle = true)
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
@@ -168,7 +165,13 @@ fun FavoritesScreen(viewModel: MusicViewModel) {
                         TrackRow(
                             track = track,
                             index = -1,
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            onClick = {
+                                val indexInMain = viewModel.playlist.indexOfFirst { it.uri == track.uri }
+                                if (indexInMain != -1) {
+                                    viewModel.playFromFavorites(favTracks, indexInMain)
+                                }
+                            }
                         )
                     }
                 }

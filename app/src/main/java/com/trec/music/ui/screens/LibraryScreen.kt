@@ -483,9 +483,8 @@ fun PlaylistEditorScreen(
     // Локальный список для перетаскивания
     var localTracks by remember { mutableStateOf(rawTracks) }
 
-    // Применяем фильтрацию и сортировку
     val displayTracks = remember(localTracks, searchQuery, sortOption) {
-        var list = localTracks
+        var list = localTracks.distinctBy { it.uri.toString() } // ← защита от дублей
         if (searchQuery.isNotEmpty()) {
             list = list.filter {
                 it.title.contains(searchQuery, ignoreCase = true) ||
@@ -1078,10 +1077,12 @@ fun TrackPickerSheet(viewModel: MusicViewModel, currentPlaylist: String, onDismi
 
     val tracksToShow = remember(searchQuery, allTracks, viewModel.playlistUpdateTrigger) {
         val existing = viewModel.getPlaylistTracks(currentPlaylist).map { it.uri.toString() }.toSet()
-        allTracks.filter {
-            !existing.contains(it.uri.toString()) &&
-                    (it.title.contains(searchQuery, true) || it.artist?.contains(searchQuery, true) == true)
-        }
+        allTracks
+            .distinctBy { it.uri.toString() }
+            .filter {
+                !existing.contains(it.uri.toString()) &&
+                        (it.title.contains(searchQuery, true) || it.artist?.contains(searchQuery, true) == true)
+            }
     }
 
     GlassDialog(onDismiss = onDismiss) {

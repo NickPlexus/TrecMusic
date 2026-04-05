@@ -68,7 +68,7 @@ fun BottomNavigationBar(navController: NavController, viewModel: MusicViewModel)
             .fillMaxWidth()
             .background(TrecBlack.copy(alpha = 0.95f))
     ) {
-        Divider(
+        HorizontalDivider(
             color = Color.White.copy(alpha = 0.1f),
             thickness = 0.5.dp,
             modifier = Modifier.fillMaxWidth()

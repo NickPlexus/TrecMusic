@@ -43,6 +43,10 @@ import coil.compose.AsyncImage
 import com.trec.music.data.TrecTrackEnhanced
 import com.trec.music.utils.formatTime
 import com.trec.music.viewmodel.MusicViewModel
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun VinylPlaceholder(color: Color, modifier: Modifier = Modifier) {
@@ -298,8 +302,11 @@ fun TrackContextMenu(
 @Composable
 fun TrackInfoDialog(track: TrecTrackEnhanced, viewModel: MusicViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
-    // Получаем метаданные (Битрейт, Формат и т.д.)
-    val info = remember(track.uri) { viewModel.getTrackMetadataForUri(context, track.uri) }
+    val info by produceState(initialValue = mapOf("Загрузка..." to ""), key1 = track.uri) {
+        value = withContext(Dispatchers.IO) {
+            viewModel.getTrackMetadataForUri(context, track.uri)
+        }
+    }
 
     GlassDialog(onDismiss = onDismiss) {
         Column {

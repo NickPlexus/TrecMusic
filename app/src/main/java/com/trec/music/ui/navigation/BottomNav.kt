@@ -33,8 +33,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
@@ -42,14 +42,13 @@ import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.trec.music.ui.theme.TrecBlack
+import com.trec.music.ui.theme.liquidAccent
 import com.trec.music.viewmodel.MusicViewModel
 
 @Composable
 fun BottomNavigationBar(navController: NavController, viewModel: MusicViewModel) {
     val activeColor = MaterialTheme.colorScheme.primary
-
-    // Если доминантный цвет слишком темный, используем белый для активности
-    val safeActiveColor = if (activeColor.luminance() < 0.3f) Color.White else activeColor
+    val safeActiveColor = activeColor.liquidAccent()
 
     // Плавное появление/исчезновение вкладок модулей
     val recorderWeight by animateFloatAsState(
@@ -66,10 +65,18 @@ fun BottomNavigationBar(navController: NavController, viewModel: MusicViewModel)
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(TrecBlack.copy(alpha = 0.95f))
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.06f),
+                        safeActiveColor.copy(alpha = 0.02f),
+                        TrecBlack.copy(alpha = 0.94f)
+                    )
+                )
+            )
     ) {
         HorizontalDivider(
-            color = Color.White.copy(alpha = 0.1f),
+            color = safeActiveColor.copy(alpha = 0.34f),
             thickness = 0.5.dp,
             modifier = Modifier.fillMaxWidth()
         )

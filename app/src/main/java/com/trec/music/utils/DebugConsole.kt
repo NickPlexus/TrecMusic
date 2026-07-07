@@ -88,7 +88,7 @@ object DebugLogger {
     private fun addEntrySafe(entry: LogEntry) {
         logs.add(0, entry)
         if (logs.size > 1000) {
-            logs.removeLast()
+            logs.removeAt(logs.lastIndex)
         }
     }
 

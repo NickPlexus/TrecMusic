@@ -17,12 +17,15 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import androidx.compose.ui.graphics.Color
 import androidx.core.net.toUri
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.MediaItem
 import androidx.palette.graphics.Palette
+import com.trec.music.utils.chooseTrecAccentColor
+import com.trec.music.utils.TrackMetadataText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -191,12 +194,14 @@ class MetadataHandler(private val vm: MusicViewModel) {
                 meta["Битрейт"] = "${bitrate.toInt() / 1000} kbps"
             }
             
-            val sampleRate = ret.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)
-            if (!sampleRate.isNullOrBlank()) {
-                meta["Частота дискретизации"] = "${sampleRate.toInt() / 1000} kHz"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val sampleRate = ret.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)
+                if (!sampleRate.isNullOrBlank()) {
+                    meta["Частота дискретизации"] = "${sampleRate.toInt() / 1000} kHz"
+                }
             }
-            if (sizeBytes != null && sizeBytes > 0) {
-                meta["Размер файла"] = formatFileSize(sizeBytes!!)
+            sizeBytes?.takeIf { it > 0 }?.let { size ->
+                meta["Размер файла"] = formatFileSize(size)
             }
             
             val mimeType = ret.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
@@ -239,7 +244,7 @@ class MetadataHandler(private val vm: MusicViewModel) {
         val title = vm.currentTrackTitle.takeIf { it.isNotBlank() && it != "TREC MUSIC" }
         if (title != null) meta["Название"] = title
 
-        val artist = vm.currentTrackArtist?.takeIf { it.isNotBlank() }
+        val artist = vm.getCurrentDisplayArtist().takeIf { it.isNotBlank() }
         if (artist != null) meta["Исполнитель"] = artist
 
         val album = vm.currentTrackAlbum?.takeIf { it.isNotBlank() }
@@ -261,25 +266,39 @@ class MetadataHandler(private val vm: MusicViewModel) {
             // Пропускаем служебные пути (реверс/инструментал)
             if (mediaItem?.mediaId == vm.reverseTrackPath || mediaItem?.mediaId == vm.instrumentalTrackPath) return
 
-            val title = mediaItem?.mediaMetadata?.title?.toString()
-                ?: mediaItem?.mediaId?.split("/")?.last()?.substringBeforeLast(".") ?: "TREC MUSIC"
-            vm.currentTrackTitle = title
+            val rawTitle = mediaItem?.mediaMetadata?.title?.toString()
+                ?: mediaItem?.mediaId?.split("/")?.last()?.substringBeforeLast(".")
+                ?: "TREC MUSIC"
+            val normalizedTitle = TrackMetadataText.normalizeValue(rawTitle) ?: "TREC MUSIC"
+            val inferred = TrackMetadataText.inferArtistAndTitle(normalizedTitle)
+            vm.currentTrackTitle = inferred.second
             vm.duration = vm.player?.duration?.coerceAtLeast(0) ?: 0L
 
-            val artist = mediaItem?.mediaMetadata?.artist?.toString()?.takeIf { it.isNotBlank() }
-            val album = mediaItem?.mediaMetadata?.albumTitle?.toString()?.takeIf { it.isNotBlank() }
-            vm.currentTrackArtist = artist
-            vm.currentTrackAlbum = album
+            val artistFromItem = TrackMetadataText.normalizeValue(mediaItem?.mediaMetadata?.artist?.toString())
+            val albumFromItem = TrackMetadataText.normalizeValue(mediaItem?.mediaMetadata?.albumTitle?.toString())
+            vm.currentTrackArtist = TrackMetadataText.displayArtist(
+                artist = artistFromItem ?: inferred.first,
+                albumArtist = null,
+                title = vm.currentTrackTitle
+            )
+            vm.currentTrackAlbum = albumFromItem
             vm.currentCoverUrl = null
             vm.hasEmbeddedArtwork = false
 
             val uriString = mediaItem?.mediaId
             if (uriString != null) {
                 val uri = uriString.toUri()
-                vm.currentTrackUri = uri
-                vm.normalTrackUri = uri
+                vm.markCurrentTrackAsPlaybackTarget(uri)
                 vm.isCurrentTrackFav = vm.favoriteTracks.contains(uriString)
                 vm.instrumentalTrackPath = null
+
+                val track = vm.playlistSnapshot().find { it.uri.toString() == uriString }
+                vm.currentTrackArtist = TrackMetadataText.displayArtist(
+                    artist = artistFromItem ?: track?.artist ?: inferred.first,
+                    albumArtist = track?.albumArtist,
+                    title = vm.currentTrackTitle
+                )
+                vm.currentTrackAlbum = albumFromItem ?: track?.album
 
                 // Start online cover lookup in parallel with embedded-art extraction.
                 vm.refreshCoverArt(vm.currentTrackArtist, vm.currentTrackTitle, vm.currentTrackAlbum)
@@ -290,8 +309,9 @@ class MetadataHandler(private val vm: MusicViewModel) {
                     // Проверяем наличие кэша
                     val revFile = File(context.cacheDir, "rev_${uri.toString().hashCode()}.wav")
                     vm.isReverseReady = revFile.exists() && revFile.length() > 1000
-                    val instFile = File(context.cacheDir, "inst_${uri.toString().hashCode()}.wav")
-                    vm.isInstrumentalReady = instFile.exists() && instFile.length() > 1000
+                    // Должно совпадать с DspHandler: путь учитывает режим/силу/буст.
+                    val sepFile = vm.getKaraokeCacheFileFor(uri, context)
+                    vm.isInstrumentalReady = sepFile.exists() && sepFile.length() > 1000
 
                     vm.backgroundGenJob?.cancel()
                 } else {
@@ -357,7 +377,7 @@ class MetadataHandler(private val vm: MusicViewModel) {
                             vm.setEmbeddedArtworkForCurrentTrack(bitmap, uri.toString())
                         }
                         if (vm.isDynamicColorEnabled && palette != null) {
-                            vm.dominantColor = Color(palette.getDominantColor(0xFFD50000.toInt()))
+                            vm.dominantColor = Color(palette.chooseTrecAccentColor())
                             vm.secondaryColor = Color(palette.getDarkMutedColor(0xFF050505.toInt()))
                         } else if (!vm.isDynamicColorEnabled) {
                             vm.dominantColor = vm.staticColor

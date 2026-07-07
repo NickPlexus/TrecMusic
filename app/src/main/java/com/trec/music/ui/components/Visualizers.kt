@@ -193,9 +193,9 @@ fun EnhancedBreathingBackground(
     modifier: Modifier = Modifier
 ) {
     // Генерируем палитру на основе основного цвета
-    val primaryColor = color.copy(alpha = 0.45f)
-    val secondaryColor = remember(color) { shiftHue(color, 40f).copy(alpha = 0.35f) }
-    val tertiaryColor = remember(color) { shiftHue(color, -40f).copy(alpha = 0.30f) }
+    val primaryColor = color.copy(alpha = 0.16f)
+    val secondaryColor = remember(color) { shiftHue(color, 40f).copy(alpha = 0.10f) }
+    val tertiaryColor = remember(color) { shiftHue(color, -40f).copy(alpha = 0.08f) }
 
     val infiniteTransition = rememberInfiniteTransition(label = "Aurora")
 
@@ -225,7 +225,7 @@ fun EnhancedBreathingBackground(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val w = size.width
             val h = size.height
-            val baseRadius = minOf(w, h) * 0.7f
+            val baseRadius = minOf(w, h) * 0.58f
 
             // Пятно 1 (Основное)
             val x1 = w * 0.5f + (cos(t) * w * 0.15f).toFloat()

@@ -17,6 +17,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.compose.runtime.*
@@ -26,6 +27,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -42,13 +44,21 @@ import coil.request.ImageRequest
 import com.trec.music.PlaybackService
 import com.trec.music.PlaybackCoordinator
 import com.trec.music.PrefsManager
+import com.trec.music.SavedPlaybackState
 import com.trec.music.data.LibraryRepository
 import com.trec.music.data.LyricsRepository
 import com.trec.music.data.TrecTrackEnhanced
 import com.trec.music.data.api.CoverArtService
+import com.trec.music.data.api.RemoteTrackMetadata
+import com.trec.music.data.api.TrackMetadataService
+import com.trec.music.utils.AudioAnalysisBus
+import com.trec.music.utils.AudioAnalysisFrame
+import com.trec.music.utils.chooseTrecAccentColor
+import com.trec.music.utils.TrackMetadataText
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Locale
@@ -56,6 +66,11 @@ import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.random.Random
+
+enum class KaraokeOutputMode {
+    INSTRUMENTAL,
+    ACAPELLA
+}
 
 @OptIn(UnstableApi::class)
 class MusicViewModel(application: Application) : AndroidViewModel(application) {
@@ -83,16 +98,24 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     var currentTrackAlbum by mutableStateOf<String?>(null)
     var currentTrackUri: Uri? by mutableStateOf(null)
     var playlistUpdateTrigger by mutableIntStateOf(0)
+    var audioAnalysis by mutableStateOf(AudioAnalysisFrame.Silent)
+        private set
 
     var currentCoverUrl by mutableStateOf<String?>(null)
     var hasEmbeddedArtwork by mutableStateOf(false)
 
     private val coverArtService = CoverArtService()
+    private val trackMetadataService = TrackMetadataService()
     private val coverUrlCache = mutableStateMapOf<String, String>()
     private val coverColorCache = mutableStateMapOf<String, Color>()
+    private val metadataCache = java.util.concurrent.ConcurrentHashMap<String, RemoteTrackMetadata>()
     // ФИКС КРАША: ConcurrentHashMap безопасен для многопоточного добавления/удаления (Main Thread + Dispatchers.IO)
     private val coverFetchJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val metadataFetchJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val coverFetchLimiter = Semaphore(4)
+    private val metadataFetchLimiter = Semaphore(3)
+    private var metadataPersistJob: Job? = null
+    private var appliedArtworkSignature: String? = null
 
     private fun hasNotificationPermission(): Boolean {
         val app = getApplication<Application>()
@@ -156,7 +179,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         set(value) {
             _isDynamicColorEnabled.value = value
             prefs.saveDynamicColorEnabled(value)
-            if (!value) dominantColor = staticColor
+            if (!value) {
+                dominantColor = staticColor
+                secondaryColor = Color(0xFF050505)
+            }
         }
 
     private val _staticColor = mutableStateOf(Color(0xFFD50000))
@@ -165,7 +191,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         set(value) {
             _staticColor.value = value
             prefs.saveStaticColor(value.toArgb())
-            if (!isDynamicColorEnabled) dominantColor = value
+            if (!isDynamicColorEnabled) {
+                dominantColor = value
+                secondaryColor = Color(0xFF050505)
+            }
+        }
+
+    private val _useSpectrumColorPicker = mutableStateOf(false)
+    var useSpectrumColorPicker: Boolean
+        get() = _useSpectrumColorPicker.value
+        set(value) {
+            _useSpectrumColorPicker.value = value
+            prefs.saveSpectrumColorPickerEnabled(value)
         }
 
     var dominantColor by mutableStateOf(Color(0xFFD50000))
@@ -228,6 +265,17 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             prefs.saveSpeedFeatureEnabled(value)
         }
 
+    // Speed behavior: when enabled, pitch will follow speed (slower = deeper voice).
+    private val _isPitchFollowsSpeed = mutableStateOf(true)
+    var isPitchFollowsSpeed: Boolean
+        get() = _isPitchFollowsSpeed.value
+        set(value) {
+            _isPitchFollowsSpeed.value = value
+            prefs.savePitchFollowsSpeed(value)
+            // Apply current speed again so the change is audible immediately.
+            dspHandler.setSpeed(playbackSpeed)
+        }
+
     private val _isEffectsFeatureEnabled = mutableStateOf(true)
     var isEffectsFeatureEnabled: Boolean
         get() = _isEffectsFeatureEnabled.value
@@ -255,11 +303,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             syncSettingsToService() // comment normalized
         }
 
-    private val _crossfadeMs = mutableStateOf(0)
+    private val _crossfadeMs = mutableIntStateOf(0)
     var crossfadeMs: Int
-        get() = _crossfadeMs.value
+        get() = _crossfadeMs.intValue
         set(value) {
-            _crossfadeMs.value = value
+            _crossfadeMs.intValue = value
             prefs.saveCrossfade(value)
         }
 
@@ -275,11 +323,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             syncSettingsToService() // comment normalized
         }
 
-    private val _audioBalance = mutableStateOf(0f)
+    private val _audioBalance = mutableFloatStateOf(0f)
     var audioBalance: Float
-        get() = _audioBalance.value
+        get() = _audioBalance.floatValue
         set(value) {
-            _audioBalance.value = value
+            _audioBalance.floatValue = value
             prefs.saveAudioBalance(value)
             syncSettingsToService() // comment normalized
         }
@@ -321,11 +369,34 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     var duration by mutableLongStateOf(0L)
     var currentPosition by mutableLongStateOf(0L)
     var playlist = mutableStateListOf<TrecTrackEnhanced>()
+    var archivedTracks = mutableStateListOf<TrecTrackEnhanced>()
     var favoriteTracks = mutableStateListOf<String>()
     var isCurrentTrackFav by mutableStateOf(false)
     var userPlaylists = mutableStateListOf<String>()
     var currentPlaylistFilter by mutableStateOf<String?>(null)
     var favoritesContext: List<TrecTrackEnhanced>? = null  // ← добавить
+    var archiveContext: List<TrecTrackEnhanced>? = null
+
+    fun playlistSnapshot(): List<TrecTrackEnhanced> = copyStateListSafely(playlist)
+
+    fun archivedTracksSnapshot(): List<TrecTrackEnhanced> = copyStateListSafely(archivedTracks)
+
+    fun archivedTrackUrisSnapshot(): Set<String> {
+        return archivedTracksSnapshot().map { it.uri.toString() }.toSet()
+    }
+
+    fun favoriteTracksSnapshot(): Set<String> = copyStateListSafely(favoriteTracks).toSet()
+
+    private fun <T> copyStateListSafely(source: List<T>): List<T> {
+        repeat(3) {
+            try {
+                return source.toList()
+            } catch (_: IndexOutOfBoundsException) {
+            } catch (_: ConcurrentModificationException) {
+            }
+        }
+        return emptyList()
+    }
 
     // --- STATE: DSP EFFECTS ---
     var playbackSpeed by mutableFloatStateOf(1.0f)
@@ -339,8 +410,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     var isGeneratingReverse by mutableStateOf(false)
     var isReverseReady by mutableStateOf(false)
     var isVocalRemovalProcessing by mutableStateOf(false)
+    var vocalRemovalProcessingUri by mutableStateOf<String?>(null)
     var isInstrumentalReady by mutableStateOf(false)
     var instrumentalTrackPath by mutableStateOf<String?>(null)
+    var karaokeOutputMode by mutableStateOf(KaraokeOutputMode.INSTRUMENTAL)
+    var karaokeRemovalStrength by mutableFloatStateOf(1.0f)
+    var karaokeVocalBoost by mutableFloatStateOf(1.15f)
     var reverseCacheSize by mutableStateOf("0 MB")
     var appCacheSize by mutableStateOf("0 MB")
 
@@ -377,8 +452,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // --- INTERNALS ---
     private var controllerFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
     var audioSessionId: Int = 0
-    private var preScratchSpeed: Float = 1f
+    private var preScratchParams: PlaybackParameters = PlaybackParameters.DEFAULT
     private var isScratching = false
+    private val vinylTickIntervalMs = 120f
+    private val vinylBaseRpm = 26.5f
 
     // ==========================================
     // INITIALIZATION
@@ -392,6 +469,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
         favoriteTracks.clear()
         favoriteTracks.addAll(repository.getFavorites())
+        archivedTracks.clear()
+        archivedTracks.addAll(repository.getArchivedTracks())
         brokenTracks.addAll(repository.getBlacklist())
         libraryHandler.refreshPlaylists()
 
@@ -401,6 +480,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
         _isDynamicColorEnabled.value = prefs.getDynamicColorEnabled()
         _staticColor.value = Color(prefs.getStaticColor())
+        _useSpectrumColorPicker.value = prefs.getSpectrumColorPickerEnabled()
         _isVinylModeEnabled.value = prefs.getVinylModeEnabled()
 
         // Feature Flags
@@ -410,13 +490,19 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         _isReverseFeatureEnabled.value = prefs.getReverseFeatureEnabled()
         _isKaraokeFeatureEnabled.value = prefs.getKaraokeFeatureEnabled()
         _isSpeedFeatureEnabled.value = prefs.getSpeedFeatureEnabled()
+        _isPitchFollowsSpeed.value = prefs.getPitchFollowsSpeed()
         _isEffectsFeatureEnabled.value = prefs.getEffectsFeatureEnabled()
+        karaokeOutputMode = runCatching {
+            KaraokeOutputMode.valueOf(prefs.getKaraokeOutputMode())
+        }.getOrDefault(KaraokeOutputMode.INSTRUMENTAL)
+        karaokeRemovalStrength = prefs.getKaraokeRemovalStrength().coerceIn(0f, 1.5f)
+        karaokeVocalBoost = prefs.getKaraokeVocalBoost().coerceIn(1f, 2f)
 
         // Audio Expert
         _skipSilenceEnabled.value = prefs.getSkipSilence()
-        _crossfadeMs.value = prefs.getCrossfade()
+        _crossfadeMs.intValue = prefs.getCrossfade()
         _monoAudio.value = prefs.getMonoAudio()
-        _audioBalance.value = prefs.getAudioBalance()
+        _audioBalance.floatValue = prefs.getAudioBalance()
 
         // UI Behavior
         _keepScreenOn.value = prefs.getKeepScreenOn()
@@ -447,11 +533,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
                     metadataHandler.updateCurrentTrackInfo(app, controller.currentMediaItem)
                     libraryHandler.loadTrackCache()
-
-                    val savedFolder = repository.getSavedFolderUri()
-                    if (playlist.isNotEmpty()) {
+                    if (controller.currentMediaItem != null) {
+                        syncNowPlayingFromPlayer()
+                    } else {
                         restoreLastTrack()
                     }
+
+                    val savedFolder = repository.getSavedFolderUri()
                     viewModelScope.launch {
                         if (savedFolder != null) {
                             libraryHandler.loadFromFolder(app, savedFolder.toUri(), isAutoLoad = true)
@@ -485,6 +573,104 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun getTrackArtist(track: TrecTrackEnhanced?): String {
+        if (track == null) return "Unknown Artist"
+        return TrackMetadataText.displayArtist(track.artist, track.albumArtist, track.title)
+    }
+
+    fun getCurrentDisplayArtist(): String {
+        if (currentTrackUri == null) return "—"
+        val track = playlistSnapshot().find { it.uri == currentTrackUri }
+            ?: archivedTracksSnapshot().find { it.uri == currentTrackUri }
+        return TrackMetadataText.displayArtist(currentTrackArtist ?: track?.artist, track?.albumArtist, currentTrackTitle)
+    }
+
+    fun currentPlaybackTrack(): TrecTrackEnhanced? {
+        val uri = currentTrackUri ?: return null
+        val uriString = uri.toString()
+        return playlistSnapshot().find { it.uri.toString() == uriString }
+            ?: archivedTracksSnapshot().find { it.uri.toString() == uriString }
+            ?: repository.getPlaybackState()?.queue?.find { it.uri.toString() == uriString }
+            ?: TrecTrackEnhanced(
+                uri = uri,
+                title = currentTrackTitle.takeIf { it.isNotBlank() && it != "TREC MUSIC" }
+                    ?: uri.lastPathSegment?.substringBeforeLast('.')
+                    ?: "TREC MUSIC",
+                artist = currentTrackArtist,
+                album = currentTrackAlbum,
+                durationMs = duration
+            )
+    }
+
+    fun isKaraokeProcessingForCurrentTrack(): Boolean {
+        val currentUri = currentTrackUri?.toString()
+        return isVocalRemovalProcessing && currentUri != null && currentUri == vocalRemovalProcessingUri
+    }
+
+    fun getKaraokeCacheFileFor(uri: Uri, context: Context): File {
+        val modeTag = if (karaokeOutputMode == KaraokeOutputMode.ACAPELLA) "acapella" else "inst"
+        val strengthTag = (karaokeRemovalStrength * 100f).roundToInt().coerceIn(0, 150)
+        val boostTag = (karaokeVocalBoost * 100f).roundToInt().coerceIn(100, 200)
+        val trackHash = uri.toString().hashCode()
+        return File(context.cacheDir, "sep_umxl1_${modeTag}_s${strengthTag}_b${boostTag}_${trackHash}.wav")
+    }
+
+    fun updateKaraokeOutputMode(mode: KaraokeOutputMode) {
+        karaokeOutputMode = mode
+        prefs.saveKaraokeOutputMode(mode.name)
+        refreshKaraokeReadyStateForCurrentTrack()
+    }
+
+    fun updateKaraokeRemovalStrength(value: Float) {
+        val clamped = value.coerceIn(0f, 1.5f)
+        karaokeRemovalStrength = clamped
+        prefs.saveKaraokeRemovalStrength(clamped)
+        refreshKaraokeReadyStateForCurrentTrack()
+    }
+
+    fun updateKaraokeVocalBoost(value: Float) {
+        val clamped = value.coerceIn(1f, 2f)
+        karaokeVocalBoost = clamped
+        prefs.saveKaraokeVocalBoost(clamped)
+        refreshKaraokeReadyStateForCurrentTrack()
+    }
+
+    private fun refreshKaraokeReadyStateForCurrentTrack() {
+        val uri = normalTrackUri ?: currentTrackUri ?: return
+        val file = getKaraokeCacheFileFor(uri, getApplication())
+        isInstrumentalReady = file.exists() && file.length() > 1000
+    }
+
+    fun markCurrentTrackAsPlaybackTarget(uri: Uri) {
+        currentTrackUri = uri
+        normalTrackUri = uri
+        if (vocalRemovalProcessingUri != uri.toString()) {
+            isVocalRemovalProcessing = false
+        }
+    }
+
+    fun ensureMetadataForTrack(track: TrecTrackEnhanced) {
+        ensureTrackMetadataForTrack(
+            trackUri = track.uri.toString(),
+            artist = track.artist,
+            title = track.title,
+            album = track.album,
+            activeUri = null
+        )
+    }
+
+    fun ensureCurrentTrackMetadata() {
+        val activeUri = currentTrackUri?.toString() ?: return
+        val current = playlistSnapshot().find { it.uri.toString() == activeUri }
+        ensureTrackMetadataForTrack(
+            trackUri = activeUri,
+            artist = currentTrackArtist ?: current?.artist,
+            title = currentTrackTitle.takeIf { it.isNotBlank() && it != "TREC MUSIC" } ?: current?.title,
+            album = currentTrackAlbum ?: current?.album,
+            activeUri = activeUri
+        )
+    }
+
     // ==========================================
     // DELEGATED METHODS (Handlers)
     // ==========================================
@@ -501,6 +687,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun persistPlaylistOrder() = libraryHandler.persistPlaylistOrder()
     fun getPlaylistTracks(name: String) = libraryHandler.getPlaylistTracks(name)
     fun deleteFileFromDevice(context: Context, track: TrecTrackEnhanced) = libraryHandler.deleteFileFromDevice(context, track)
+    fun deleteFilesFromDevice(context: Context, tracks: List<TrecTrackEnhanced>) = libraryHandler.deleteFilesFromDevice(context, tracks)
+    fun archiveTrack(context: Context, track: TrecTrackEnhanced) = libraryHandler.archiveTrack(context, track)
+    fun archiveTracks(context: Context, tracks: List<TrecTrackEnhanced>) = libraryHandler.archiveTracks(context, tracks)
+    fun restoreArchivedTrack(context: Context, track: TrecTrackEnhanced) = libraryHandler.restoreArchivedTrack(context, track)
     fun refreshLibrary(context: Context) = libraryHandler.refreshLibrary(context)
     fun loadFromFolder(context: Context, folderUri: Uri, isAutoLoad: Boolean = false) = viewModelScope.launch { libraryHandler.loadFromFolder(context, folderUri, isAutoLoad) }
 
@@ -548,7 +738,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
                 val mins = remaining / 1000 / 60
                 val secs = (remaining / 1000) % 60
-                sleepTimerRemainingFormatted = String.format("%02d:%02d", mins, secs)
+                sleepTimerRemainingFormatted = String.format(Locale.US, "%02d:%02d", mins, secs)
 
                 if (remaining < 30_000) {
                     val volume = (remaining.toFloat() / 30_000f).coerceIn(0f, 1f)
@@ -578,7 +768,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onScratchStart() {
         isScratching = true
-        preScratchSpeed = player?.playbackParameters?.speed ?: 1f
+        preScratchParams = player?.playbackParameters ?: PlaybackParameters.DEFAULT
         sensorHandler.startScratchLoop()
     }
 
@@ -629,8 +819,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
         if (isReversing && isReverseReady) switchPlayerSource(toReverse = false)
 
-        val normalParams = PlaybackParameters(preScratchSpeed, 1f)
-        player.playbackParameters = normalParams
+        player.playbackParameters = preScratchParams
         runWithNotificationPermission { player.play() }
     }
 
@@ -674,7 +863,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
         val metaBuilder = MediaMetadata.Builder()
             .setTitle(track.title)
-            .setArtist(track.artist)
+            .setArtist(getTrackArtist(track))
             .setAlbumTitle(track.album)
 
         if (!cachedUrl.isNullOrBlank()) {
@@ -690,42 +879,140 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             .build()
     }
 
+    private fun mediaItemToTrack(mediaItem: MediaItem, fallbackDurationMs: Long = 0L): TrecTrackEnhanced {
+        val uri = mediaItem.localConfiguration?.uri ?: Uri.parse(mediaItem.mediaId)
+        val metadata = mediaItem.mediaMetadata
+        val title = metadata.title?.toString()?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringBeforeLast('.')?.takeIf { it.isNotBlank() }
+            ?: "TREC MUSIC"
+        return TrecTrackEnhanced(
+            uri = uri,
+            title = title,
+            artist = metadata.artist?.toString()?.takeIf { it.isNotBlank() },
+            album = metadata.albumTitle?.toString()?.takeIf { it.isNotBlank() },
+            durationMs = fallbackDurationMs.coerceAtLeast(0L)
+        )
+    }
+
+    private fun orderedMediaItemIndices(p: Player): List<Int> {
+        val count = p.mediaItemCount
+        if (count <= 0) return emptyList()
+        if (!p.shuffleModeEnabled) return (0 until count).toList()
+
+        val timeline = p.currentTimeline
+        if (timeline.isEmpty) return (0 until count).toList()
+
+        val result = ArrayList<Int>(count)
+        var index = timeline.getFirstWindowIndex(true)
+        while (index != C.INDEX_UNSET && result.size < count) {
+            result.add(index)
+            index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, true)
+        }
+        return if (result.size == count) result else (0 until count).toList()
+    }
+
+    private fun savedQueueFromPlayer(p: Player): List<TrecTrackEnhanced> {
+        val currentIndex = p.currentMediaItemIndex
+        val currentDuration = p.duration.takeIf { it > 0L } ?: duration
+        val tracksSnapshot = (playlistSnapshot() + archivedTracksSnapshot())
+            .distinctBy { it.uri.toString() }
+        return orderedMediaItemIndices(p).mapNotNull { index ->
+            runCatching {
+                val item = p.getMediaItemAt(index)
+                tracksSnapshot.find { it.uri.toString() == item.mediaId }
+                    ?: mediaItemToTrack(
+                        mediaItem = item,
+                        fallbackDurationMs = if (index == currentIndex) currentDuration else 0L
+                    )
+            }.getOrNull()
+        }.distinctBy { it.uri.toString() }
+    }
+
+    private fun fallbackTrackForUri(uriString: String): TrecTrackEnhanced {
+        val uri = Uri.parse(uriString)
+        val title = uri.lastPathSegment
+            ?.substringBeforeLast('.')
+            ?.takeIf { it.isNotBlank() }
+            ?: currentTrackTitle.takeIf { it.isNotBlank() && it != "TREC MUSIC" }
+            ?: "TREC MUSIC"
+        return TrecTrackEnhanced(uri = uri, title = title)
+    }
+
+    private fun syncNowPlayingFromPlayer() {
+        val p = player ?: return
+        val mediaItem = p.currentMediaItem ?: return
+        val uriString = mediaItem.mediaId.takeIf { it.isNotBlank() }
+            ?: mediaItem.localConfiguration?.uri?.toString()
+            ?: return
+        val savedState = repository.getPlaybackState()
+        val track = playlistSnapshot().find { it.uri.toString() == uriString }
+            ?: archivedTracksSnapshot().find { it.uri.toString() == uriString }
+            ?: savedState?.queue?.find { it.uri.toString() == uriString }
+            ?: mediaItemToTrack(mediaItem, p.duration.takeIf { it > 0L } ?: 0L)
+
+        repeatMode = p.repeatMode
+        shuffleMode = savedState?.shuffleMode ?: p.shuffleModeEnabled
+        isPlaying = p.isPlaying
+        updateNowPlayingFromTrack(track, p.currentPosition.coerceAtLeast(0L))
+    }
+
+    private fun getPlaybackTracksForPlaylist(playlistName: String): List<TrecTrackEnhanced> {
+        val source = if (playlistName == "All Tracks") {
+            playlistSnapshot()
+        } else {
+            getPlaylistTracks(playlistName)
+        }
+        return source.distinctBy { it.uri.toString() }
+    }
+
+    private fun resetTransientPlaybackState() {
+        isReversing = false
+        isGeneratingReverse = false
+        instrumentalTrackPath = null
+        backgroundGenJob?.cancel()
+        crossfadeFadeInStartElapsed = -1L
+        player?.volume = sleepVolumeFactor.coerceIn(0f, 1f)
+        applyPreset("Normal")
+    }
+
+    private fun updateNowPlayingFromTrack(track: TrecTrackEnhanced, positionMs: Long = 0L) {
+        markCurrentTrackAsPlaybackTarget(track.uri)
+        appliedArtworkSignature = null
+        currentTrackTitle = track.title
+        currentCoverUrl = null
+        hasEmbeddedArtwork = false
+        currentTrackArtist = getTrackArtist(track)
+        currentTrackAlbum = track.album
+        currentPosition = positionMs.coerceAtLeast(0L)
+        duration = track.durationMs.coerceAtLeast(0L)
+        refreshCoverArt(currentTrackArtist, currentTrackTitle, currentTrackAlbum)
+    }
+
     fun playTrackFromPlaylist(playlistName: String, index: Int) {
         runWithNotificationPermission {
             try {
                 PlaybackCoordinator.pauseRecorder()
-                val tracksToPlay =
-                    if (playlistName == "All Tracks") playlist.toList() else getPlaylistTracks(playlistName)
+                val tracksToPlay = getPlaybackTracksForPlaylist(playlistName)
                 if (tracksToPlay.isEmpty()) return@runWithNotificationPermission
 
                 val safeIndex = index.coerceIn(0, tracksToPlay.lastIndex)
                 currentPlaylistFilter = if (playlistName == "All Tracks") null else playlistName
-                favoritesContext = null  // ← сбрасываем контекст избранного
-                isReversing = false; isGeneratingReverse = false; instrumentalTrackPath = null
-                backgroundGenJob?.cancel()
-                applyPreset("Normal")
+                favoritesContext = null
+                archiveContext = null
+                resetTransientPlaybackState()
 
-                // Берем только 20 треков вперед, чтобы система не взорвалась от нагрузки
-                val endIndex = min(safeIndex + 20, tracksToPlay.size)
-                val windowTracks = tracksToPlay.subList(safeIndex, endIndex)
-
-                val mediaItems = windowTracks.map { buildSafeMediaItem(it) }
+                val mediaItems = tracksToPlay.map { buildSafeMediaItem(it) }
 
                 val p = player ?: return@runWithNotificationPermission
-                p.setMediaItems(mediaItems)
-                p.seekTo(0, 0)
+                p.shuffleModeEnabled = shuffleMode
+                p.repeatMode = repeatMode
+                p.setMediaItems(mediaItems, safeIndex, 0L)
                 p.prepare()
                 p.play()
 
                 val track = tracksToPlay[safeIndex]
-                currentTrackUri = track.uri
-                normalTrackUri = track.uri
-                currentTrackTitle = track.title
-                currentCoverUrl = null
-                hasEmbeddedArtwork = false
-                currentTrackArtist = track.artist
-                currentTrackAlbum = track.album
-                refreshCoverArt(currentTrackArtist, currentTrackTitle, currentTrackAlbum)
+                updateNowPlayingFromTrack(track)
+                saveState()
             } catch (t: Throwable) {
                 t.printStackTrace()
                 Toast.makeText(getApplication(), "Не удалось начать воспроизведение", Toast.LENGTH_LONG).show()
@@ -735,45 +1022,40 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     fun playTrackAtIndex(index: Int) = playTrackFromPlaylist("All Tracks", index)
 
+    fun playTrackFromPlaylistByUri(playlistName: String, uri: Uri) {
+        val tracksToPlay = getPlaybackTracksForPlaylist(playlistName)
+        val index = tracksToPlay.indexOfFirst { it.uri == uri }
+        if (index != -1) {
+            playTrackFromPlaylist(playlistName, index)
+        }
+    }
+
     fun playShuffledFromPlaylist(playlistName: String) {
         runWithNotificationPermission {
             try {
                 PlaybackCoordinator.pauseRecorder()
-                val tracksToPlay =
-                    if (playlistName == "All Tracks") playlist.toList() else getPlaylistTracks(playlistName)
+                val tracksToPlay = getPlaybackTracksForPlaylist(playlistName)
                 if (tracksToPlay.isEmpty()) return@runWithNotificationPermission
 
                 currentPlaylistFilter = if (playlistName == "All Tracks") null else playlistName
-                isReversing = false; isGeneratingReverse = false; instrumentalTrackPath = null
-                backgroundGenJob?.cancel()
-                applyPreset("Normal")
+                favoritesContext = null
+                archiveContext = null
+                resetTransientPlaybackState()
 
-                // Берем весь список и перемешиваем
-                val shuffledTracks = tracksToPlay.shuffled()
-                // Берем первые 20 из УЖЕ перемешанного списка
-                val windowTracks = shuffledTracks.take(20)
-
-                val mediaItems = windowTracks.map { buildSafeMediaItem(it) }
+                val startIndex = if (tracksToPlay.size > 1) Random.nextInt(tracksToPlay.size) else 0
+                val mediaItems = tracksToPlay.map { buildSafeMediaItem(it) }
 
                 val p = player ?: return@runWithNotificationPermission
-                p.setMediaItems(mediaItems)
-                p.shuffleModeEnabled = true
                 shuffleMode = true
-                p.seekTo(0, 0)
+                p.shuffleModeEnabled = true
+                p.repeatMode = repeatMode
+                p.setMediaItems(mediaItems, startIndex, 0L)
                 p.prepare()
                 p.play()
 
-                // Первый играющий трек — это первый элемент НОВОГО списка, а не случайный из старого
-                val track = windowTracks[0]
-
-                currentTrackUri = track.uri
-                normalTrackUri = track.uri
-                currentTrackTitle = track.title
-                currentCoverUrl = null
-                hasEmbeddedArtwork = false
-                currentTrackArtist = track.artist
-                currentTrackAlbum = track.album
-                refreshCoverArt(currentTrackArtist, currentTrackTitle, currentTrackAlbum)
+                val track = tracksToPlay[startIndex]
+                updateNowPlayingFromTrack(track)
+                saveState()
             } catch (t: Throwable) {
                 t.printStackTrace()
                 Toast.makeText(getApplication(), "Не удалось начать воспроизведение", Toast.LENGTH_LONG).show()
@@ -787,42 +1069,74 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 PlaybackCoordinator.pauseRecorder()
                 if (favTracks.isEmpty()) return@runWithNotificationPermission
 
-                val tracksToPlay = if (shuffle) favTracks.shuffled() else favTracks
-                val safeIndex = if (shuffle) 0 else startIndex.coerceIn(0, tracksToPlay.lastIndex)
+                val tracksToPlay = favTracks.distinctBy { it.uri.toString() }
+                if (tracksToPlay.isEmpty()) return@runWithNotificationPermission
+                val safeIndex = if (shuffle && tracksToPlay.size > 1) {
+                    Random.nextInt(tracksToPlay.size)
+                } else {
+                    startIndex.coerceIn(0, tracksToPlay.lastIndex)
+                }
 
                 // Сохраняем контекст — skip next/prev будет ходить по избранному
                 favoritesContext = tracksToPlay
+                archiveContext = null
                 currentPlaylistFilter = null
-                isReversing = false
-                instrumentalTrackPath = null
-                backgroundGenJob?.cancel()
-                applyPreset("Normal")
+                resetTransientPlaybackState()
 
-                val endIndex = min(safeIndex + 20, tracksToPlay.size)
-                val windowTracks = tracksToPlay.subList(safeIndex, endIndex)
-                val mediaItems = windowTracks.map { buildSafeMediaItem(it) }
+                val mediaItems = tracksToPlay.map { buildSafeMediaItem(it) }
 
                 val p = player ?: return@runWithNotificationPermission
-                p.setMediaItems(mediaItems)
+                shuffleMode = shuffle
+                p.shuffleModeEnabled = shuffle
+                p.repeatMode = repeatMode
+                p.setMediaItems(mediaItems, safeIndex, 0L)
                 if (shuffle) {
                     p.shuffleModeEnabled = true
-                    shuffleMode = true
                 }
-                p.seekTo(0, 0)
                 p.prepare()
                 p.play()
 
                 val track = tracksToPlay[safeIndex]
-                currentTrackUri = track.uri
-                normalTrackUri = track.uri
-                currentTrackTitle = track.title
-                currentCoverUrl = null
-                hasEmbeddedArtwork = false
-                currentTrackArtist = track.artist
-                currentTrackAlbum = track.album
-                refreshCoverArt(currentTrackArtist, currentTrackTitle, currentTrackAlbum)
+                updateNowPlayingFromTrack(track)
+                saveState()
             } catch (t: Throwable) {
                 t.printStackTrace()
+            }
+        }
+    }
+
+    fun playFromArchive(track: TrecTrackEnhanced) {
+        runWithNotificationPermission {
+            try {
+                PlaybackCoordinator.pauseRecorder()
+                val tracksToPlay = archivedTracksSnapshot()
+                    .ifEmpty { listOf(track) }
+                    .distinctBy { it.uri.toString() }
+                if (tracksToPlay.isEmpty()) return@runWithNotificationPermission
+
+                val safeIndex = tracksToPlay.indexOfFirst { it.uri == track.uri }
+                    .takeIf { it >= 0 }
+                    ?: 0
+
+                archiveContext = tracksToPlay
+                favoritesContext = null
+                currentPlaylistFilter = null
+                shuffleMode = false
+                resetTransientPlaybackState()
+
+                val mediaItems = tracksToPlay.map { buildSafeMediaItem(it) }
+                val p = player ?: return@runWithNotificationPermission
+                p.shuffleModeEnabled = false
+                p.repeatMode = repeatMode
+                p.setMediaItems(mediaItems, safeIndex, 0L)
+                p.prepare()
+                p.play()
+
+                updateNowPlayingFromTrack(tracksToPlay[safeIndex])
+                saveState()
+            } catch (t: Throwable) {
+                t.printStackTrace()
+                Toast.makeText(getApplication(), "Не удалось запустить архив", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -849,8 +1163,18 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun skipNext() {
         if (isErrorState) { errorAnimationJob?.cancel(); isErrorState = false }
         lastSkipDirection = 1
-        // Всегда используем наш кастомный скип, чтобы окно треков постоянно обновлялось
-        handleCustomTrackSkip(1)
+        runWithNotificationPermission {
+            val p = player ?: return@runWithNotificationPermission
+            if (p.mediaItemCount == 0) return@runWithNotificationPermission
+            if (p.hasNextMediaItem()) {
+                p.seekToNextMediaItem()
+            } else if (repeatMode == Player.REPEAT_MODE_ALL) {
+                p.seekTo(0, 0L)
+            } else {
+                return@runWithNotificationPermission
+            }
+            p.play()
+        }
     }
 
     fun skipPrev() {
@@ -862,34 +1186,43 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             player?.seekTo(0)
             runWithNotificationPermission { player?.play() }
         } else {
-            handleCustomTrackSkip(-1)
+            runWithNotificationPermission {
+                val p = player ?: return@runWithNotificationPermission
+                if (p.mediaItemCount == 0) return@runWithNotificationPermission
+                if (p.hasPreviousMediaItem()) {
+                    p.seekToPreviousMediaItem()
+                } else if (repeatMode == Player.REPEAT_MODE_ALL) {
+                    p.seekTo((p.mediaItemCount - 1).coerceAtLeast(0), 0L)
+                } else {
+                    return@runWithNotificationPermission
+                }
+                p.play()
+            }
         }
     }
 
     private fun handleCustomTrackSkip(direction: Int) {
         // Приоритет: избранное > плейлист > вся библиотека
-        val tracks = favoritesContext
+        val tracks = archiveContext
+            ?: favoritesContext
             ?: if (currentPlaylistFilter != null) libraryHandler.getPlaylistTracks(currentPlaylistFilter!!)
-            else playlist.toList()
+            else playlistSnapshot()
         val curUri = normalTrackUri ?: currentTrackUri
         val idx = tracks.indexOfFirst { it.uri == curUri }
         if (idx != -1) {
-            val nextIdx = if (shuffleMode && direction == 1) {
-                // При shuffle вперёд — случайный трек (кроме текущего)
-                if (tracks.size > 1) (0 until tracks.size).filter { it != idx }.random()
-                else idx
-            } else {
-                var i = idx + direction
-                if (i >= tracks.size) i = 0
-                if (i < 0) i = tracks.size - 1
-                i
-            }
+            var nextIdx = idx + direction
+            if (nextIdx >= tracks.size) nextIdx = 0
+            if (nextIdx < 0) nextIdx = tracks.size - 1
             playTrackFromPlaylist(currentPlaylistFilter ?: "All Tracks", nextIdx)
         }
     }
 
     fun skipNextRandom() {
         performHapticFeedback()
+        if ((player?.mediaItemCount ?: 0) == 0 || currentTrackUri == null) {
+            playShuffledFromPlaylist(currentPlaylistFilter ?: "All Tracks")
+            return
+        }
         if (!shuffleMode) toggleShuffle()
         skipNext()
     }
@@ -899,20 +1232,28 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         currentPosition = pos
     }
 
-    fun toggleShuffle() { shuffleMode = !shuffleMode; player?.shuffleModeEnabled = shuffleMode }
+    fun toggleShuffle() {
+        shuffleMode = !shuffleMode
+        player?.shuffleModeEnabled = shuffleMode
+        saveState()
+    }
 
     fun cycleRepeatMode() {
         repeatMode = if (repeatMode == Player.REPEAT_MODE_OFF) Player.REPEAT_MODE_ALL else if (repeatMode == Player.REPEAT_MODE_ALL) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
         player?.repeatMode = repeatMode
+        saveState()
     }
 
     fun playExternalFile(context: Context, file: File) {
         runWithNotificationPermission {
             PlaybackCoordinator.pauseRecorder()
+            favoritesContext = null
+            archiveContext = null
+            currentPlaylistFilter = null
             isReversing = false; instrumentalTrackPath = null
             val uri = Uri.fromFile(file)
             currentTrackTitle = file.name
-            currentTrackUri = uri
+            markCurrentTrackAsPlaybackTarget(uri)
             currentCoverUrl = null
             hasEmbeddedArtwork = false
             currentTrackArtist = null
@@ -922,11 +1263,20 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 val retriever = MediaMetadataRetriever()
                 try {
                     retriever.setDataSource(context, uri)
-                    val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
-                    val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
-                    val album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
+                    val titleRaw = TrackMetadataText.normalizeValue(
+                        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+                    )
+                    val artistRaw = TrackMetadataText.normalizeValue(
+                        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                    )
+                    val album = TrackMetadataText.normalizeValue(
+                        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
+                    )
+                    val titleInfo = TrackMetadataText.inferArtistAndTitle(titleRaw ?: currentTrackTitle)
+                    val title = titleInfo.second
+                    val artist = artistRaw ?: titleInfo.first
                     withContext(Dispatchers.Main) {
-                        if (!title.isNullOrBlank()) currentTrackTitle = title
+                        if (title.isNotBlank()) currentTrackTitle = title
                         currentTrackArtist = artist
                         currentTrackAlbum = album
 
@@ -959,7 +1309,43 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveState() { currentTrackUri?.toString()?.let { repository.saveLastState(it, currentPosition) } }
+    fun saveState() {
+        val uri = currentTrackUri?.toString()
+            ?: player?.currentMediaItem?.mediaId?.takeIf { it.isNotBlank() }
+            ?: return
+        val p = player
+        val livePosition = p?.currentPosition?.takeIf { it >= 0L } ?: currentPosition
+        val queue = if (p != null && p.mediaItemCount > 0) {
+            savedQueueFromPlayer(p)
+        } else {
+            repository.getPlaybackState()?.queue?.takeIf { it.isNotEmpty() }
+                ?: playlistSnapshot().takeIf { it.isNotEmpty() }
+                ?: listOf(fallbackTrackForUri(uri))
+        }
+        val currentIndex = queue.indexOfFirst { it.uri.toString() == uri }
+            .takeIf { it >= 0 }
+            ?: (p?.currentMediaItemIndex ?: 0).coerceAtLeast(0)
+        val source = when {
+            archiveContext != null -> "archive"
+            favoritesContext != null -> "favorites"
+            currentPlaylistFilter != null -> "playlist"
+            else -> "all"
+        }
+
+        repository.savePlaybackState(
+            SavedPlaybackState(
+                currentUri = uri,
+                positionMs = livePosition,
+                queue = queue,
+                currentIndex = currentIndex,
+                shuffleMode = shuffleMode || (p?.shuffleModeEnabled == true),
+                repeatMode = repeatMode,
+                playlistName = currentPlaylistFilter,
+                source = source,
+                savedAtMs = System.currentTimeMillis()
+            )
+        )
+    }
 
     // --- LYRICS METHODS ---
     fun loadLyrics() {
@@ -970,10 +1356,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
         lyricsJob = viewModelScope.launch {
             val uriString = currentTrackUri?.toString()
-            val track = playlist.find { it.uri.toString() == uriString }
-                ?: playlist.find { it.title == currentTrackTitle }
+            val tracksSnapshot = playlistSnapshot()
+            val track = tracksSnapshot.find { it.uri.toString() == uriString }
+                ?: tracksSnapshot.find { it.title == currentTrackTitle }
 
-            val artist = track?.artist?.takeIf { it.isNotBlank() } ?: "Unknown Artist"
+            val artist = getTrackArtist(track)
             val title = track?.title?.takeIf { it.isNotBlank() }
                 ?: currentTrackTitle.takeIf { it.isNotBlank() && it != "TREC MUSIC" }
 
@@ -1010,6 +1397,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 album = album,
                 activeUri = currentTrackUri?.toString()
             )
+            ensureCurrentTrackMetadata()
         }
     }
 
@@ -1025,6 +1413,196 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             album = track.album,
             activeUri = null
         )
+        ensureMetadataForTrack(track)
+    }
+
+    private fun metadataCacheKey(artist: String?, title: String?, album: String?): String {
+        return coverCacheKey(artist, title, album)
+    }
+
+    private fun normalizeRemoteMetadata(meta: RemoteTrackMetadata): RemoteTrackMetadata? {
+        val title = TrackMetadataText.normalizeValue(meta.title)
+        val artist = TrackMetadataText.normalizeValue(meta.artist)
+        val album = TrackMetadataText.normalizeValue(meta.album)
+        val genre = TrackMetadataText.normalizeValue(meta.genre)
+        val year = meta.year?.takeIf { it in 1900..2100 }
+        if (title == null && artist == null && album == null && genre == null && year == null) return null
+        return RemoteTrackMetadata(
+            title = title,
+            artist = artist,
+            album = album,
+            genre = genre,
+            year = year
+        )
+    }
+
+    private fun remoteMetadataToJson(meta: RemoteTrackMetadata): String {
+        val obj = JSONObject()
+        meta.title?.let { obj.put("title", it) }
+        meta.artist?.let { obj.put("artist", it) }
+        meta.album?.let { obj.put("album", it) }
+        meta.genre?.let { obj.put("genre", it) }
+        meta.year?.let { obj.put("year", it) }
+        return obj.toString()
+    }
+
+    private fun remoteMetadataFromJson(raw: String?): RemoteTrackMetadata? {
+        if (raw.isNullOrBlank()) return null
+        return runCatching {
+            val obj = JSONObject(raw)
+            RemoteTrackMetadata(
+                title = obj.optString("title", "").ifBlank { null },
+                artist = obj.optString("artist", "").ifBlank { null },
+                album = obj.optString("album", "").ifBlank { null },
+                genre = obj.optString("genre", "").ifBlank { null },
+                year = if (obj.has("year")) obj.optInt("year").takeIf { it > 0 } else null
+            )
+        }.getOrNull()?.let { normalizeRemoteMetadata(it) }
+    }
+
+    private fun scheduleTrackCacheSave() {
+        metadataPersistJob?.cancel()
+        metadataPersistJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(1200L)
+            val tracksSnapshot = withContext(Dispatchers.Main) { playlistSnapshot() }
+            repository.saveTrackCache(tracksSnapshot)
+        }
+    }
+
+    private fun mergeTrackWithRemoteMetadata(
+        track: TrecTrackEnhanced,
+        remote: RemoteTrackMetadata
+    ): TrecTrackEnhanced {
+        val currentArtist = TrackMetadataText.normalizeValue(track.artist)
+        val currentAlbum = TrackMetadataText.normalizeValue(track.album)
+        val currentGenre = TrackMetadataText.normalizeValue(track.genre)
+
+        val inferred = TrackMetadataText.inferArtistAndTitle(track.title)
+        val titleLooksGenerated = track.title.equals("Unknown Track", ignoreCase = true) ||
+            (currentArtist == null && inferred.first != null)
+
+        val mergedTitle = when {
+            remote.title != null && titleLooksGenerated -> remote.title
+            else -> track.title
+        }
+        val mergedArtist = currentArtist ?: remote.artist
+        val mergedAlbum = currentAlbum ?: remote.album
+        val mergedGenre = currentGenre ?: remote.genre
+        val mergedYear = track.year ?: remote.year
+
+        return track.copy(
+            title = mergedTitle,
+            artist = mergedArtist,
+            album = mergedAlbum,
+            genre = mergedGenre,
+            year = mergedYear
+        )
+    }
+
+    private fun applyRemoteMetadataToTrack(trackUri: String, remote: RemoteTrackMetadata, activeUri: String?) {
+        val idx = playlist.indexOfFirst { it.uri.toString() == trackUri }
+        if (idx == -1) return
+
+        val oldTrack = playlist[idx]
+        val updatedTrack = mergeTrackWithRemoteMetadata(oldTrack, remote)
+        val trackChanged = updatedTrack != oldTrack
+        if (trackChanged) {
+            playlist[idx] = updatedTrack
+            playlistUpdateTrigger++
+            scheduleTrackCacheSave()
+        }
+
+        val active = activeUri ?: currentTrackUri?.toString()
+        if (active == trackUri) {
+            val prevTitle = currentTrackTitle
+            val prevArtist = currentTrackArtist
+            val prevAlbum = currentTrackAlbum
+            currentTrackTitle = updatedTrack.title
+            currentTrackArtist = updatedTrack.artist
+            currentTrackAlbum = updatedTrack.album
+            if (trackChanged || prevTitle != currentTrackTitle || prevArtist != currentTrackArtist || prevAlbum != currentTrackAlbum) {
+                refreshCoverArt(updatedTrack.artist, updatedTrack.title, updatedTrack.album)
+            }
+            if (trackChanged) {
+                tryUpdateMediaStoreMetadata(updatedTrack.uri, updatedTrack)
+            }
+        }
+    }
+
+    private fun ensureTrackMetadataForTrack(
+        trackUri: String,
+        artist: String?,
+        title: String?,
+        album: String?,
+        activeUri: String?
+    ) {
+        val safeTitle = TrackMetadataText.normalizeValue(title) ?: return
+        val safeArtist = TrackMetadataText.normalizeValue(artist)
+        val safeAlbum = TrackMetadataText.normalizeValue(album)
+        val key = metadataCacheKey(safeArtist, safeTitle, safeAlbum)
+
+        metadataCache[key]?.let { cached ->
+            applyRemoteMetadataToTrack(trackUri, cached, activeUri)
+            return
+        }
+
+        remoteMetadataFromJson(prefs.getCachedTrackMetadata(key))?.let { cached ->
+            metadataCache[key] = cached
+            applyRemoteMetadataToTrack(trackUri, cached, activeUri)
+            return
+        }
+
+        val existingJob = metadataFetchJobs[key]
+        if (existingJob?.isActive == true) {
+            viewModelScope.launch(Dispatchers.Main) {
+                runCatching { existingJob.join() }
+                metadataCache[key]?.let { applyRemoteMetadataToTrack(trackUri, it, activeUri) }
+            }
+            return
+        }
+
+        val isHighPriority = activeUri != null && currentTrackUri?.toString() == activeUri
+        val job = viewModelScope.launch(Dispatchers.IO) {
+            if (!isHighPriority) {
+                delay(120L)
+                if (metadataFetchJobs.size >= 14) return@launch
+            }
+
+            metadataFetchLimiter.withPermit {
+                val fetched = trackMetadataService.fetchMetadata(safeArtist, safeTitle, safeAlbum)
+                val normalized = fetched?.let { normalizeRemoteMetadata(it) } ?: return@withPermit
+
+                metadataCache[key] = normalized
+                prefs.saveCachedTrackMetadata(key, remoteMetadataToJson(normalized))
+
+                withContext(Dispatchers.Main) {
+                    applyRemoteMetadataToTrack(trackUri, normalized, activeUri)
+                }
+            }
+        }
+
+        metadataFetchJobs[key] = job
+        job.invokeOnCompletion { metadataFetchJobs.remove(key) }
+    }
+
+    private fun tryUpdateMediaStoreMetadata(uri: Uri, track: TrecTrackEnhanced) {
+        if (uri.scheme != "content") return
+        val values = android.content.ContentValues().apply {
+            put(MediaStore.Audio.Media.TITLE, track.title)
+            TrackMetadataText.normalizeValue(track.artist)?.let { put(MediaStore.Audio.Media.ARTIST, it) }
+            TrackMetadataText.normalizeValue(track.album)?.let { put(MediaStore.Audio.Media.ALBUM, it) }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                TrackMetadataText.normalizeValue(track.genre)?.let { put(MediaStore.Audio.Media.GENRE, it) }
+            }
+            track.year?.takeIf { it > 0 }?.let { put(MediaStore.Audio.Media.YEAR, it) }
+        }
+        if (values.size() == 0) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                getApplication<Application>().contentResolver.update(uri, values, null, null)
+            }
+        }
     }
 
     @kotlin.OptIn(ExperimentalCoilApi::class)
@@ -1055,6 +1633,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     fun clearAppCache(context: Context) {
         // Обложки (Coil + prefs)
         clearCoverCache(context)
+        prefs.clearTrackMetadataCache()
+        metadataCache.clear()
 
         // DSP/обработка (rev_/inst_ + сброс состояний)
         clearReverseCache(context)
@@ -1082,7 +1662,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         // 1) DSP / обработка
         val processingBytes = try {
             cacheDir.listFiles { _, name ->
-                ((name.startsWith("rev_") || name.startsWith("inst_")) && name.endsWith(".wav")) ||
+                ((name.startsWith("rev_") || name.startsWith("inst_") || name.startsWith("sep_umxl1_")) && name.endsWith(".wav")) ||
                     (name.startsWith("temp_decode_") && name.endsWith(".raw")) ||
                     (name.startsWith("vr_") && name.endsWith(".raw"))
             }?.sumOf { it.length() } ?: 0L
@@ -1247,7 +1827,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                             val bmp = (result.drawable as? BitmapDrawable)?.bitmap
                             if (bmp != null) {
                                 val palette = try { Palette.from(bmp).generate() } catch (e: Exception) { null }
-                                val dom = palette?.getDominantColor(0xFFD50000.toInt()) ?: 0xFFD50000.toInt()
+                                val dom = palette?.chooseTrecAccentColor() ?: 0xFFD50000.toInt()
                                 val sec = palette?.getDarkMutedColor(0xFF050505.toInt()) ?: 0xFF050505.toInt()
                                 prefs.saveCachedCoverColorArgb(key, dom)
 
@@ -1298,7 +1878,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                     val result = app.imageLoader.execute(req)
                     val bmp = (result.drawable as? BitmapDrawable)?.bitmap ?: return@withPermit
                     val palette = try { Palette.from(bmp).generate() } catch (_: Exception) { null }
-                    val dom = palette?.getDominantColor(0xFFD50000.toInt())
+                    val dom = palette?.chooseTrecAccentColor()
                     val sec = palette?.getDarkMutedColor(0xFF050505.toInt())
                     if (dom != null) {
                         prefs.saveCachedCoverColorArgb(key, dom)
@@ -1325,50 +1905,92 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun updateCurrentMediaItemArtwork(url: String?, artworkData: ByteArray? = null, activeUri: String?) {
-        // replaceMediaItem оборачивает timeline в новый слой при каждом вызове.
-        // После нескольких десятков треков накапливаются сотни обёрток → StackOverflow.
-        // UI получает обложки через Coil + currentCoverUrl — replaceMediaItem не нужен.
-        // Встроенные обложки в уведомлении Media3 загружает из файла самостоятельно.
+        if (activeUri == null || currentTrackUri?.toString() != activeUri) return
+        if (url.isNullOrBlank() && artworkData == null) return
+
+        val signature = "$activeUri|${url.orEmpty()}|${artworkData?.size ?: 0}"
+        if (signature == appliedArtworkSignature) return
+        appliedArtworkSignature = signature
     }
 
     fun restoreLastTrack() {
-        val lastUri = repository.getLastTrackUri() ?: return
-        val player = player ?: return
-        val index = playlist.indexOfFirst { it.uri.toString() == lastUri }
-        if (index != -1) {
-            val lastPosition = repository.getLastTrackPos().coerceAtLeast(0L)
-            val windowSize = 20
-            val startIndex = index  // только текущий и следующие
-            val endIndex = (index + windowSize).coerceAtMost(playlist.size - 1)
-            val windowTracks = playlist.subList(startIndex, endIndex + 1)
-            val playerIndex = 0  // текущий трек будет первым в списке
-
-            val mediaItems = windowTracks.map { buildSafeMediaItem(it) }
-
-            player.setMediaItems(mediaItems)
-            // ИСПРАВЛЕНО: используем playerIndex (0), а не глобальный index
-            player.seekTo(playerIndex, lastPosition)
-            player.prepare()
-            // не включаем авто-воспроизведение
-
-            val track = playlist[index]
-            currentTrackUri = track.uri
-            normalTrackUri = track.uri
-            currentTrackTitle = track.title
-            currentCoverUrl = null
-            hasEmbeddedArtwork = false
-            currentTrackArtist = track.artist
-            currentTrackAlbum = track.album
-            refreshCoverArt(currentTrackArtist, currentTrackTitle, currentTrackAlbum)
-            currentPosition = lastPosition
+        val p = player ?: return
+        if (p.currentMediaItem != null) {
+            syncNowPlayingFromPlayer()
+            return
         }
+
+        val saved = repository.getPlaybackState()
+        val lastUri = saved?.currentUri ?: repository.getLastTrackUri() ?: return
+        val lastPosition = saved?.positionMs ?: repository.getLastTrackPos().coerceAtLeast(0L)
+        val cachedByUri = (playlistSnapshot() + archivedTracksSnapshot())
+            .distinctBy { it.uri.toString() }
+            .associateBy { it.uri.toString() }
+        val savedQueue = saved?.queue.orEmpty()
+        val restoredTracks = when {
+            savedQueue.isNotEmpty() -> savedQueue.map { cachedByUri[it.uri.toString()] ?: it }
+            cachedByUri.isNotEmpty() -> cachedByUri.values.toList()
+            else -> listOf(fallbackTrackForUri(lastUri))
+        }.distinctBy { it.uri.toString() }
+
+        if (restoredTracks.isEmpty()) return
+        val restoredIndex = restoredTracks.indexOfFirst { it.uri.toString() == lastUri }
+            .takeIf { it >= 0 }
+            ?: saved?.currentIndex?.coerceIn(0, restoredTracks.lastIndex)
+            ?: 0
+
+        repeatMode = saved?.repeatMode ?: repeatMode
+        val restoredShuffleMode = saved?.shuffleMode ?: shuffleMode
+        currentPlaylistFilter = saved?.playlistName
+        favoritesContext = if (saved?.source == "favorites") restoredTracks else null
+        archiveContext = if (saved?.source == "archive") restoredTracks else null
+
+        p.shuffleModeEnabled = false
+        shuffleMode = restoredShuffleMode
+        p.repeatMode = repeatMode
+        p.setMediaItems(restoredTracks.map { buildSafeMediaItem(it) }, restoredIndex, lastPosition.coerceAtLeast(0L))
+        p.prepare()
+
+        updateNowPlayingFromTrack(restoredTracks[restoredIndex], lastPosition)
+        saveState()
     }
-    fun getAllTracks(): List<TrecTrackEnhanced> = playlist
+    fun getAllTracks(): List<TrecTrackEnhanced> = playlistSnapshot()
 
     fun getFilteredPlaylist(): List<TrecTrackEnhanced> {
-        if (currentPlaylistFilter == null) return playlist
+        val tracks = playlistSnapshot()
+        if (currentPlaylistFilter == null) return tracks
         val allowedUris = repository.getTracksInPlaylist(currentPlaylistFilter!!)
-        return playlist.filter { allowedUris.contains(it.uri.toString()) }
+        return tracks.filter { allowedUris.contains(it.uri.toString()) }
+    }
+
+    fun removeTrackFromActiveQueue(uriString: String) {
+        val p = player ?: return
+        val indices = (0 until p.mediaItemCount).filter { index ->
+            runCatching {
+                val item = p.getMediaItemAt(index)
+                item.mediaId == uriString || item.localConfiguration?.uri?.toString() == uriString
+            }.getOrDefault(false)
+        }
+        if (indices.isEmpty()) return
+
+        val wasCurrent = indices.contains(p.currentMediaItemIndex)
+        val wasPlaying = p.isPlaying
+        if (indices.size >= p.mediaItemCount) {
+            stopAndClear()
+            return
+        }
+
+        indices.asReversed().forEach { index ->
+            runCatching { p.removeMediaItem(index) }
+        }
+
+        if (wasCurrent) {
+            syncNowPlayingFromPlayer()
+            if (wasPlaying) {
+                runWithNotificationPermission { p.play() }
+            }
+        }
+        saveState()
     }
 
     fun stopAndClear() {
@@ -1381,6 +2003,12 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         currentTrackAlbum = null
         instrumentalTrackPath = null
         isReversing = false
+        isVocalRemovalProcessing = false
+        vocalRemovalProcessingUri = null
+        favoritesContext = null
+        archiveContext = null
+        currentPlaylistFilter = null
+        repository.clearPlaybackState()
     }
     fun toggleFavorite() {
         val uriStr = currentTrackUri.toString()
@@ -1417,7 +2045,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
-                if (playing && !isErrorState) startProgressUpdater()
+                if (playing && !isErrorState) {
+                    startProgressUpdater()
+                } else {
+                    audioAnalysis = AudioAnalysisFrame.Silent
+                }
             }
             override fun onMediaItemTransition(mi: MediaItem?, r: Int) {
                 try {
@@ -1431,43 +2063,26 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                         saveState()
                     }
 
-                    // --- ФИКС БЕСКОНЕЧНОГО ПЛЕЙЛИСТА ---
-                    // Когда мы подходим к концу загруженного 20-трекового окна, незаметно подгружаем еще 20.
-                    val p = player
-                    if (p != null && mi != null) {
-                        val currentIndex = p.currentMediaItemIndex
-                        val total = p.mediaItemCount
-                        if (total - currentIndex <= 3) {
-                            val tracks =
-                                if (currentPlaylistFilter != null) libraryHandler.getPlaylistTracks(currentPlaylistFilter!!)
-                                else playlist.toList()
-                            val globalIndex = tracks.indexOfFirst { it.uri.toString() == mi.mediaId }
-                            if (globalIndex != -1) {
-                                val nextStart = globalIndex + (total - currentIndex)
-                                if (nextStart < tracks.size) {
-                                    val nextEnd = min(nextStart + 20, tracks.size)
-                                    val nextTracks = tracks.subList(nextStart, nextEnd)
-                                    val newItems = nextTracks.map { buildSafeMediaItem(it) }
-                                    p.addMediaItems(newItems)
-                                }
-                            }
-                        }
-                    }
-
-                    if (crossfadeMs > 0) {
-                        crossfadeFadeInStartElapsed = SystemClock.elapsedRealtime()
-                        player?.volume = 0f  // используем player?., а не p
-                    } else {
-                        crossfadeFadeInStartElapsed = -1L
-                    }
+                    crossfadeFadeInStartElapsed = -1L
+                    player?.volume = sleepVolumeFactor.coerceIn(0f, 1f)
                 } catch (t: Throwable) {
                     // Listener не должен ронять процесс.
                     t.printStackTrace()
                 }
             }
             override fun onPlaybackStateChanged(s: Int) {
-                if (s == Player.STATE_READY) duration = p.duration.coerceAtLeast(0)
+                if (s == Player.STATE_READY) {
+                    duration = p.duration.coerceAtLeast(0)
+                    p.volume = sleepVolumeFactor.coerceIn(0f, 1f)
+                    crossfadeFadeInStartElapsed = -1L
+                }
                 if (s == Player.STATE_ENDED && !isErrorState) lastSkipDirection = 1
+            }
+            override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+                shuffleMode = shuffleModeEnabled
+            }
+            override fun onRepeatModeChanged(mode: Int) {
+                repeatMode = mode
             }
             override fun onPlayerError(e: PlaybackException) {
                 if (!isErrorState) { isErrorState = true; runErrorAnimation() }
@@ -1487,14 +2102,22 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                         if (isErrorState) vinylRotationAngle += 30f
                         else if (player?.isLoading == false) {
                             val dir = if (isReversing) -1.0f else 1.0f
-                            val speed = player?.playbackParameters?.speed ?: 1f
-                            vinylRotationAngle += 1.5f * dir * speed
+                            val effectiveSpeed = playbackSpeed
+                                .takeIf { it > 0f }
+                                ?: (player?.playbackParameters?.speed ?: 1f)
+                            val degreesPerTick = (vinylBaseRpm * 360f / 60f) * (vinylTickIntervalMs / 1000f)
+                            vinylRotationAngle += degreesPerTick * dir * effectiveSpeed
                         }
                     }
                 }
 
                 // Автоматическое управление громкостью (таймер сна + кроссфейд)
                 applyAutomatedVolume(realPositionMs = real)
+                audioAnalysis = if (isPlaying && !isErrorState) {
+                    AudioAnalysisBus.latest()
+                } else {
+                    AudioAnalysisFrame.Silent
+                }
 
                 val now = System.currentTimeMillis()
                 if (isPlaying && now - lastStateSaveAt >= 5000L) {
@@ -1509,32 +2132,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private fun applyAutomatedVolume(realPositionMs: Long) {
         val p = player ?: return
 
-        // 1) Sleep timer fade (в последние 30 секунд)
-        val base = sleepVolumeFactor.coerceIn(0f, 1f)
-
-        // 2) Crossfade (fade-in + fade-out)
-        val cfMs = crossfadeMs.coerceAtLeast(0)
-        val dur = duration.coerceAtLeast(0L)
-
-        var factor = 1f
-        if (cfMs > 0 && dur > 0L) {
-            val remaining = (dur - realPositionMs).coerceAtLeast(0L)
-            val fadeOut = if (remaining <= cfMs.toLong()) remaining.toFloat() / cfMs.toFloat() else 1f
-
-            val fadeIn = if (crossfadeFadeInStartElapsed >= 0L) {
-                val elapsed = (SystemClock.elapsedRealtime() - crossfadeFadeInStartElapsed).coerceAtLeast(0L)
-                (elapsed.toFloat() / cfMs.toFloat()).coerceIn(0f, 1f)
-            } else {
-                1f
-            }
-
-            factor = min(fadeIn, fadeOut)
-            if (fadeIn >= 1f) crossfadeFadeInStartElapsed = -1L
-        } else {
-            crossfadeFadeInStartElapsed = -1L
-        }
-
-        val target = (base * factor).coerceIn(0f, 1f)
+        // Реальный overlap-кроссфейд здесь не делаем: одинарный fade-out перед следующим
+        // треком слышится как секундное "притухание" в начале новой песни.
+        crossfadeFadeInStartElapsed = -1L
+        val target = sleepVolumeFactor.coerceIn(0f, 1f)
         try {
             if (abs(p.volume - target) > 0.02f) {
                 p.volume = target

@@ -96,7 +96,11 @@ object AudioReverser {
                     val inIdx = codec.dequeueInputBuffer(kTimeOutUs)
                     if (inIdx >= 0) {
                         val buffer = codec.getInputBuffer(inIdx)
-                        val size = extractor.readSampleData(buffer!!, 0)
+                        if (buffer == null) {
+                            codec.queueInputBuffer(inIdx, 0, 0, 0, 0)
+                            continue
+                        }
+                        val size = extractor.readSampleData(buffer, 0)
                         if (size < 0) {
                             codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true

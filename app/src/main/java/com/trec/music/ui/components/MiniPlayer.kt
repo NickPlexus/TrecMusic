@@ -6,9 +6,11 @@ package com.trec.music.ui.components
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
@@ -30,6 +32,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalView
@@ -38,7 +41,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.trec.music.ui.theme.TrecBlack
+import com.trec.music.ui.theme.liquidAccent
 import com.trec.music.viewmodel.MusicViewModel
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -49,11 +52,12 @@ fun MiniPlayer(
     onOpen: () -> Unit
 ) {
     val dominantColor by animateColorAsState(
-        targetValue = viewModel.dominantColor,
+        targetValue = viewModel.dominantColor.liquidAccent(),
         animationSpec = tween(1200),
         label = "MiniPlayerColor"
     )
 
+    val playerShape = RoundedCornerShape(18.dp)
     val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
     val scope = rememberCoroutineScope()
     val view = LocalView.current
@@ -111,29 +115,36 @@ fun MiniPlayer(
             modifier = Modifier
                 .padding(horizontal = 12.dp, vertical = 8.dp)
                 .fillMaxSize()
-                .clip(RoundedCornerShape(16.dp))
+                .clip(playerShape)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.White.copy(alpha = 0.10f),
+                            Color(0xFF121216).copy(alpha = 0.94f),
+                            Color(0xFF060608).copy(alpha = 0.96f)
+                        )
+                    )
+                )
+                .border(
+                    width = 1.dp,
+                    brush = Brush.verticalGradient(
+                        listOf(
+                            Color.White.copy(alpha = 0.30f),
+                            dominantColor.copy(alpha = 0.26f),
+                            Color.White.copy(alpha = 0.08f)
+                        )
+                    ),
+                    shape = playerShape
+                )
                 .clickable { onOpen() },
-            color = TrecBlack.copy(alpha = 0.95f), // Почти непрозрачный черный
-            shape = RoundedCornerShape(16.dp),
-            border = androidx.compose.foundation.BorderStroke(
-                width = 1.dp,
-                brush = Brush.verticalGradient(
-                    listOf(Color.White.copy(0.1f), dominantColor.copy(0.3f))
-                )
-            )
+            color = Color.Transparent,
+            shape = playerShape
         ) {
-            Column {
-                MiniPlayerProgress(
-                    progressProvider = {
-                        if (viewModel.duration > 0) viewModel.currentPosition.toFloat() / viewModel.duration.toFloat() else 0f
-                    },
-                    color = dominantColor
-                )
-
+            Box {
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 12.dp),
+                        .padding(horizontal = 12.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Обложка / Винил
@@ -179,7 +190,7 @@ fun MiniPlayer(
                             modifier = Modifier.basicMarquee()
                         )
                         Text(
-                            text = viewModel.currentTrackArtist ?: viewModel.playlist.find { it.uri == viewModel.currentTrackUri }?.artist ?: "Unknown Artist",
+                            text = viewModel.getCurrentDisplayArtist(),
                             color = Color.White.copy(0.6f),
                             fontSize = 12.sp,
                             maxLines = 1
@@ -197,28 +208,63 @@ fun MiniPlayer(
                         }
                         FilledIconButton(
                             onClick = { viewModel.togglePlay() },
-                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White, contentColor = Color.Black),
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Color.White,
+                                contentColor = Color.Black
+                            ),
                             modifier = Modifier.size(40.dp)
                         ) {
                             Icon(if (viewModel.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null)
                         }
                     }
                 }
+
+                MiniPlayerProgress(
+                    progressProvider = {
+                        if (viewModel.duration > 0) viewModel.currentPosition.toFloat() / viewModel.duration.toFloat() else 0f
+                    },
+                    color = dominantColor,
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
             }
         }
     }
 }
 
 @Composable
-private fun MiniPlayerProgress(progressProvider: () -> Float, color: Color) {
-    val progress = progressProvider()
-    Box(
-        modifier = Modifier.fillMaxWidth().height(2.dp).background(Color.White.copy(0.1f))
-    ) {
-        Box(
-            modifier = Modifier.fillMaxWidth(progress).fillMaxHeight().background(
-                Brush.horizontalGradient(listOf(color.copy(0.5f), color))
-            )
+private fun MiniPlayerProgress(
+    progressProvider: () -> Float,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    val progress = progressProvider().coerceIn(0f, 1f)
+    Canvas(modifier = modifier.fillMaxWidth().height(6.dp)) {
+        val y = size.height / 2f
+        drawLine(
+            color = Color.White.copy(alpha = 0.10f),
+            start = Offset(0f, y),
+            end = Offset(size.width, y),
+            strokeWidth = 2f,
+            cap = StrokeCap.Round
         )
+        val activeWidth = size.width * progress
+        if (activeWidth > 0f) {
+            drawLine(
+                color = color.copy(alpha = 0.24f),
+                start = Offset(0f, y),
+                end = Offset(activeWidth, y),
+                strokeWidth = 9f,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                brush = Brush.horizontalGradient(
+                    listOf(Color.White.copy(alpha = 0.92f), color, color.copy(alpha = 0.72f))
+                ),
+                start = Offset(0f, y),
+                end = Offset(activeWidth, y),
+                strokeWidth = 3f,
+                cap = StrokeCap.Round
+            )
+        }
     }
 }

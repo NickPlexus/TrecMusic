@@ -40,11 +40,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trec.music.data.AudioPresets
+import com.trec.music.ui.theme.liquidAccent
 import com.trec.music.viewmodel.MusicViewModel
 import java.util.Locale
 
 @Composable
 fun SpeedControlDialog(viewModel: MusicViewModel) {
+    val accent = viewModel.dominantColor.liquidAccent()
     var showDialog by remember { mutableStateOf(false) }
 
     if (showDialog) {
@@ -77,12 +79,46 @@ fun SpeedControlDialog(viewModel: MusicViewModel) {
                 // Крупное значение
                 Text(
                     text = String.format(Locale.US, "%.2f", viewModel.playbackSpeed) + "x",
-                    color = viewModel.dominantColor, // Используем динамический цвет
+                    color = accent, // Используем динамический цвет
                     fontSize = 42.sp,
                     fontWeight = FontWeight.Bold
                 )
 
-                Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(16.dp))
+
+                // Режим тона: фиксированный (time-stretch) или "как кассета" (pitch follows speed)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (viewModel.isPitchFollowsSpeed) "Тон меняется (как кассета)" else "Тон фиксирован (Pitch Lock)",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = if (viewModel.isPitchFollowsSpeed) "При замедлении голос станет ниже" else "Меняется темп без изменения голоса",
+                            color = Color.Gray,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    Switch(
+                        checked = viewModel.isPitchFollowsSpeed,
+                        onCheckedChange = { viewModel.isPitchFollowsSpeed = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = accent.copy(alpha = 0.55f),
+                            checkedBorderColor = accent.copy(alpha = 0.9f),
+                            uncheckedThumbColor = Color.White,
+                            uncheckedTrackColor = Color.White.copy(alpha = 0.15f)
+                        )
+                    )
+                }
+
+                Spacer(Modifier.height(16.dp))
 
                 // Слайдер
                 Slider(
@@ -91,8 +127,8 @@ fun SpeedControlDialog(viewModel: MusicViewModel) {
                     valueRange = 0.5f..2.0f,
                     steps = 29, // Шаг 0.05
                     colors = SliderDefaults.colors(
-                        thumbColor = viewModel.dominantColor,
-                        activeTrackColor = viewModel.dominantColor,
+                        thumbColor = accent,
+                        activeTrackColor = accent,
                         inactiveTrackColor = Color.White.copy(0.1f)
                     )
                 )
@@ -113,7 +149,7 @@ fun SpeedControlDialog(viewModel: MusicViewModel) {
                                 .size(48.dp, 32.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(
-                                    if (isSelected) viewModel.dominantColor else Color.White.copy(0.1f)
+                                    if (isSelected) accent else Color.White.copy(0.1f)
                                 )
                                 .clickable { viewModel.setSpeed(speed) }
                         ) {
@@ -128,13 +164,13 @@ fun SpeedControlDialog(viewModel: MusicViewModel) {
                 }
 
                 Spacer(Modifier.height(24.dp))
-                GlassButton("Готово", { showDialog = false }, viewModel.dominantColor, Modifier.fillMaxWidth())
+                GlassButton("Готово", { showDialog = false }, accent, Modifier.fillMaxWidth())
             }
         }
     }
 
     // Иконка вызова (подсвечивается, если скорость изменена)
-    val iconColor = if (viewModel.playbackSpeed != 1.0f) viewModel.dominantColor else Color.White
+    val iconColor = if (viewModel.playbackSpeed != 1.0f) accent else Color.White
     IconButton(onClick = { showDialog = true }) {
         Icon(Icons.Rounded.Speed, "Speed", tint = iconColor)
     }
@@ -142,6 +178,7 @@ fun SpeedControlDialog(viewModel: MusicViewModel) {
 
 @Composable
 fun EffectsPresetMenu(viewModel: MusicViewModel) {
+    val accent = viewModel.dominantColor.liquidAccent()
     var showDialog by remember { mutableStateOf(false) }
 
     if (showDialog) {
@@ -160,7 +197,7 @@ fun EffectsPresetMenu(viewModel: MusicViewModel) {
                     LazyColumn(Modifier.fillMaxWidth()) {
                         items(AudioPresets.presets) { preset ->
                             val isSelected = viewModel.currentPresetName == preset.name
-                            val activeColor = viewModel.dominantColor
+                            val activeColor = accent
 
                             Row(
                                 Modifier
@@ -214,7 +251,7 @@ fun EffectsPresetMenu(viewModel: MusicViewModel) {
         Icon(
             Icons.Rounded.AutoFixHigh,
             "FX",
-            tint = if (viewModel.currentPresetName != "Normal") viewModel.dominantColor else Color.White
+            tint = if (viewModel.currentPresetName != "Normal") accent else Color.White
         )
     }
 }

@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import com.trec.music.ui.theme.liquidAccent
+import com.trec.music.ui.theme.liquidGlassSurface
 
 /**
  * Стильный glassmorphism dropdown меню
@@ -50,6 +52,7 @@ fun GlassDropdownMenu(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val density = androidx.compose.ui.platform.LocalDensity.current
+    val menuShape = RoundedCornerShape(16.dp)
     
     AnimatedVisibility(
         visible = expanded,
@@ -75,17 +78,9 @@ fun GlassDropdownMenu(
                     .shadow(
                         elevation = 16.dp,
                         spotColor = Color.Black.copy(0.5f),
-                        shape = RoundedCornerShape(16.dp)
+                        shape = menuShape
                     )
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(
-                        color = Color(0xFF1A1A1A).copy(0.95f)
-                    )
-                    .border(
-                        width = 1.dp,
-                        color = Color.White.copy(0.1f),
-                        shape = RoundedCornerShape(16.dp)
-                    )
+                    .liquidGlassSurface(MaterialTheme.colorScheme.primary, menuShape, fillAlpha = 0.12f)
                     .padding(8.dp)
             ) {
                 Column(
@@ -114,14 +109,15 @@ fun GlassDropdownMenuItem(
     selected: Boolean = false,
     onClick: () -> Unit
 ) {
+    val accent = MaterialTheme.colorScheme.primary.liquidAccent()
     val backgroundColor by animateColorAsState(
-        targetValue = if (selected) MaterialTheme.colorScheme.primary.copy(0.15f) else Color.Transparent,
+        targetValue = if (selected) accent.copy(0.18f) else Color.Transparent,
         animationSpec = tween(150),
         label = "bg"
     )
     
     val textColor by animateColorAsState(
-        targetValue = if (selected) MaterialTheme.colorScheme.primary else Color.White,
+        targetValue = if (selected) accent else Color.White,
         animationSpec = tween(150),
         label = "text"
     )
@@ -162,7 +158,7 @@ fun GlassDropdownMenuItem(
             Icon(
                 imageVector = Icons.Rounded.Check,
                 contentDescription = "Selected",
-                tint = MaterialTheme.colorScheme.primary,
+                tint = accent,
                 modifier = Modifier.size(18.dp)
             )
         }

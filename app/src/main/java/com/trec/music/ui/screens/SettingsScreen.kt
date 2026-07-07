@@ -5,8 +5,8 @@
 package com.trec.music.ui.screens
 
 import android.Manifest
+import android.graphics.Color as AndroidColor
 import android.content.pm.PackageManager
-import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,13 +15,17 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -32,20 +36,30 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import coil.compose.AsyncImage
 import com.trec.music.PrefsManager
+import com.trec.music.data.TrecTrackEnhanced
 import com.trec.music.ui.components.GlassButton
 import com.trec.music.ui.components.GlassDialog
 import com.trec.music.ui.components.GlassTextButton
 import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.ui.theme.TrecRed
+import com.trec.music.ui.theme.liquidAccent
 import com.trec.music.viewmodel.MusicViewModel
 import androidx.navigation.NavController
 import java.util.Locale
@@ -59,8 +73,10 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
     var showSleepTimerDialog by remember { mutableStateOf(false) }
     var showAppInfoDialog by remember { mutableStateOf(false) }
     var showClearCacheDialog by remember { mutableStateOf(false) }
+    var showArchiveDialog by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
+    val accent = viewModel.dominantColor.liquidAccent()
 
     val micPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
@@ -117,7 +133,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
                 if (viewModel.sleepTimerRemainingFormatted != null) {
                     Text(
                         text = viewModel.sleepTimerRemainingFormatted!!,
-                        color = viewModel.dominantColor,
+                        color = accent,
                         fontSize = 32.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(vertical = 16.dp)
@@ -179,7 +195,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             ) {
                 Text("О приложении", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(12.dp))
-                Text("TREC Music 1.0.0", color = viewModel.dominantColor, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text("TREC Music 1.0.0", color = accent, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "Локальный музыкальный плеер с офлайн-библиотекой, плейлистами, DSP-эффектами, текстами песен и дополнительными модулями.",
@@ -198,6 +214,13 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
                 GlassButton("Закрыть", { showAppInfoDialog = false }, MaterialTheme.colorScheme.primary, Modifier.fillMaxWidth())
             }
         }
+    }
+
+    if (showArchiveDialog) {
+        ArchiveTracksDialog(
+            viewModel = viewModel,
+            onDismiss = { showArchiveDialog = false }
+        )
     }
     Column(
         Modifier
@@ -223,7 +246,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             Icons.Rounded.ColorLens,
             viewModel.isDynamicColorEnabled,
             { viewModel.isDynamicColorEnabled = it },
-            viewModel.dominantColor
+            accent
         )
 
         AnimatedVisibility(
@@ -231,22 +254,69 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             enter = expandVertically() + fadeIn(),
             exit = shrinkVertically() + fadeOut()
         ) {
-            Row(
+            Column(
                 Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 16.dp)
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(start = 40.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                availableColors.forEach { color ->
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(color)
-                            .border(2.dp, if (viewModel.staticColor == color) Color.White else Color.Transparent, CircleShape)
-                            .clickable { viewModel.staticColor = color }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.useSpectrumColorPicker = !viewModel.useSpectrumColorPicker },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Полный спектр", color = Color.LightGray, fontSize = 14.sp)
+                        Text(
+                            if (viewModel.useSpectrumColorPicker) "Выбор цветом ползунка" else "Быстрый выбор кружками",
+                            color = Color.Gray,
+                            fontSize = 12.sp
+                        )
+                    }
+                    Switch(
+                        checked = viewModel.useSpectrumColorPicker,
+                        onCheckedChange = { viewModel.useSpectrumColorPicker = it },
+                        modifier = Modifier.scale(0.82f),
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = viewModel.staticColor.liquidAccent().copy(alpha = 0.58f),
+                            checkedBorderColor = viewModel.staticColor.liquidAccent().copy(alpha = 0.9f),
+                            uncheckedThumbColor = Color.LightGray,
+                            uncheckedTrackColor = Color.DarkGray.copy(alpha = 0.7f),
+                            uncheckedBorderColor = Color.White.copy(alpha = 0.18f)
+                        )
                     )
+                }
+
+                if (viewModel.useSpectrumColorPicker) {
+                    SpectrumColorSlider(
+                        color = viewModel.staticColor,
+                        onColorChange = { viewModel.staticColor = it },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        availableColors.forEach { color ->
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(color)
+                                    .border(
+                                        2.dp,
+                                        if (viewModel.staticColor.toArgb() == color.toArgb()) Color.White else Color.Transparent,
+                                        CircleShape
+                                    )
+                                    .clickable { viewModel.staticColor = color }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -263,13 +333,13 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
                     viewModel.isScratchSoundEnabled = false
                 }
             },
-            viewModel.dominantColor
+            accent
         )
 
         AnimatedVisibility(visible = viewModel.isVinylModeEnabled, enter = expandVertically(), exit = shrinkVertically()) {
             Column(Modifier.padding(start = 16.dp)) {
-                SettingsToggleSmall("Анимация иглы", viewModel.isNeedleEnabled, { viewModel.toggleNeedle() }, viewModel.dominantColor)
-                SettingsToggleSmall("Звук скретча", viewModel.isScratchSoundEnabled, { viewModel.toggleScratchSound() }, viewModel.dominantColor)
+                SettingsToggleSmall("Анимация иглы", viewModel.isNeedleEnabled, { viewModel.toggleNeedle() }, accent)
+                SettingsToggleSmall("Звук скретча", viewModel.isScratchSoundEnabled, { viewModel.toggleScratchSound() }, accent)
             }
         }
 
@@ -280,14 +350,14 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             Icons.Rounded.Smartphone,
             viewModel.keepScreenOn,
             { viewModel.keepScreenOn = it },
-            viewModel.dominantColor
+            accent
         )
 
         SettingsToggleSmall(
             "Показывать расширения (.mp3)",
             viewModel.showFilename,
             { viewModel.showFilename = it },
-            viewModel.dominantColor
+            accent
         )
 
         HorizontalDivider(color = Color.White.copy(0.1f), modifier = Modifier.padding(vertical = 16.dp))
@@ -306,9 +376,10 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
                 if (!enable) {
                     viewModel.isRecorderFeatureEnabled = false
                 } else {
-                    val granted =
-                        Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
-                            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                    val granted = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
                     if (granted) {
                         viewModel.isRecorderFeatureEnabled = true
                     } else {
@@ -316,7 +387,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
                     }
                 }
             },
-            viewModel.dominantColor
+            accent
         )
 
         SettingsToggle(
@@ -325,7 +396,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             Icons.Rounded.Radio,
             viewModel.isRadioEnabled,
             { viewModel.isRadioEnabled = it },
-            viewModel.dominantColor
+            accent
         )
 
         SettingsToggle(
@@ -334,14 +405,14 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             Icons.Rounded.GraphicEq,
             viewModel.isDspFeatureEnabled,
             { viewModel.isDspFeatureEnabled = it },
-            viewModel.dominantColor
+            accent
         )
 
         AnimatedVisibility(visible = viewModel.isDspFeatureEnabled, enter = expandVertically(), exit = shrinkVertically()) {
             Column(Modifier.padding(start = 16.dp)) {
-                SettingsToggleSmall("Реверс (Reverse)", viewModel.isReverseFeatureEnabled, { viewModel.isReverseFeatureEnabled = it }, viewModel.dominantColor)
-                SettingsToggleSmall("Караоке (Vocal Remover)", viewModel.isKaraokeFeatureEnabled, { viewModel.isKaraokeFeatureEnabled = it }, viewModel.dominantColor)
-                SettingsToggleSmall("Скорость / Питч", viewModel.isSpeedFeatureEnabled, { viewModel.isSpeedFeatureEnabled = it }, viewModel.dominantColor)
+                SettingsToggleSmall("Реверс (Reverse)", viewModel.isReverseFeatureEnabled, { viewModel.isReverseFeatureEnabled = it }, accent)
+                SettingsToggleSmall("Караоке (AI UMXL, ~113MB)", viewModel.isKaraokeFeatureEnabled, { viewModel.isKaraokeFeatureEnabled = it }, accent)
+                SettingsToggleSmall("Скорость / Питч", viewModel.isSpeedFeatureEnabled, { viewModel.isSpeedFeatureEnabled = it }, accent)
             }
         }
 
@@ -358,7 +429,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             Icons.Rounded.SkipNext,
             viewModel.skipSilenceEnabled,
             { viewModel.skipSilenceEnabled = it },
-            viewModel.dominantColor
+            accent
         )
 
         SettingsToggle(
@@ -367,7 +438,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             Icons.Rounded.Headphones,
             viewModel.monoAudio,
             { viewModel.monoAudio = it },
-            viewModel.dominantColor
+            accent
         )
 
         // Crossfade Slider
@@ -377,7 +448,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             range = 0f..12000f,
             onValueChange = { viewModel.crossfadeMs = it.toInt() },
             label = if (viewModel.crossfadeMs == 0) "Выкл" else "${viewModel.crossfadeMs / 1000} сек",
-            activeColor = viewModel.dominantColor
+            activeColor = accent
         )
 
         // Balance Slider
@@ -387,7 +458,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             range = -1f..1f,
             onValueChange = { viewModel.audioBalance = it },
             label = if (abs(viewModel.audioBalance) < 0.1f) "Центр" else if (viewModel.audioBalance < 0) "Лево" else "Право",
-            activeColor = viewModel.dominantColor
+            activeColor = accent
         )
 
         HorizontalDivider(color = Color.White.copy(0.1f), modifier = Modifier.padding(vertical = 16.dp))
@@ -403,7 +474,19 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
         if (viewModel.sleepTimerRemainingFormatted != null) {
             Text(
                 "Осталось: ${viewModel.sleepTimerRemainingFormatted}",
-                color = viewModel.dominantColor,
+                color = accent,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(start = 56.dp, bottom = 12.dp)
+            )
+        }
+
+        SettingsItem(Icons.Rounded.Archive, "Архив треков") {
+            showArchiveDialog = true
+        }
+        if (viewModel.archivedTracks.isNotEmpty()) {
+            Text(
+                "${viewModel.archivedTracks.size} в архиве",
+                color = accent,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(start = 56.dp, bottom = 12.dp)
             )
@@ -415,7 +498,7 @@ fun SettingsScreen(viewModel: MusicViewModel, navController: NavController) {
             Icons.Rounded.Vibration,
             viewModel.isShakeEnabled,
             { viewModel.toggleShake() },
-            viewModel.dominantColor
+            accent
         )
 
         // Cache Management (обложки + обработка)
@@ -474,6 +557,251 @@ fun SectionHeader(title: String) {
 }
 
 @Composable
+private fun ArchiveTracksDialog(
+    viewModel: MusicViewModel,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val accent = viewModel.dominantColor.liquidAccent()
+    val archivedTracks = viewModel.archivedTracksSnapshot()
+    var deleteCandidate by remember { mutableStateOf<TrecTrackEnhanced?>(null) }
+
+    deleteCandidate?.let { track ->
+        GlassDialog(onDismiss = { deleteCandidate = null }) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Удалить файл?", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Файл будет удалён с устройства навсегда, даже если он сейчас в архиве.",
+                    color = Color.Gray,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(24.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    GlassTextButton("Отмена") { deleteCandidate = null }
+                    GlassButton("Удалить", {
+                        viewModel.deleteFileFromDevice(context, track)
+                        deleteCandidate = null
+                    }, accent, Modifier.weight(1f))
+                }
+            }
+        }
+    }
+
+    GlassDialog(onDismiss = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 640.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.Archive, null, tint = accent, modifier = Modifier.size(28.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Архив треков", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (archivedTracks.isEmpty()) "Здесь будут скрытые треки" else "${archivedTracks.size} треков",
+                        color = Color.Gray,
+                        fontSize = 13.sp
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, null, tint = Color.White.copy(alpha = 0.7f))
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            if (archivedTracks.isEmpty()) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(220.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Rounded.Inventory2, null, tint = Color.White.copy(alpha = 0.22f), modifier = Modifier.size(64.dp))
+                        Spacer(Modifier.height(12.dp))
+                        Text("Архив пуст", color = Color.White.copy(alpha = 0.72f), fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Text("Сюда попадут треки, которые надо спрятать, но не удалять.", color = Color.Gray, fontSize = 13.sp, textAlign = TextAlign.Center)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 500.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(Color.White.copy(alpha = 0.04f))
+                ) {
+                    items(
+                        items = archivedTracks,
+                        key = { it.uri.toString() }
+                    ) { track ->
+                        ArchivedTrackRow(
+                            track = track,
+                            viewModel = viewModel,
+                            accent = accent,
+                            onPlay = { viewModel.playFromArchive(track) },
+                            onRestore = { viewModel.restoreArchivedTrack(context, track) },
+                            onDelete = { deleteCandidate = track }
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            GlassTextButton("Закрыть", onDismiss)
+        }
+    }
+}
+
+@Composable
+private fun ArchivedTrackRow(
+    track: TrecTrackEnhanced,
+    viewModel: MusicViewModel,
+    accent: Color,
+    onPlay: () -> Unit,
+    onRestore: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val coverUrl = viewModel.getCoverUrlForTrack(track)
+    LaunchedEffect(track.uri, coverUrl) {
+        if (coverUrl == null) viewModel.ensureCoverForTrack(track)
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onPlay)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.White.copy(alpha = 0.08f))
+            )
+            AsyncImage(
+                model = coverUrl ?: track.uri,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(10.dp))
+            )
+        }
+
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = viewModel.getTrackTitle(track),
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 15.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = track.getDisplayArtist(),
+                color = Color.White.copy(alpha = 0.55f),
+                fontSize = 12.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        IconButton(onClick = onPlay, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Rounded.PlayArrow, null, tint = accent)
+        }
+        IconButton(onClick = onRestore, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Rounded.Unarchive, null, tint = Color.White.copy(alpha = 0.76f))
+        }
+        IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Default.DeleteForever, null, tint = accent.copy(alpha = 0.9f))
+        }
+    }
+    HorizontalDivider(color = Color.White.copy(alpha = 0.06f), modifier = Modifier.padding(start = 74.dp))
+}
+
+@Composable
+private fun SpectrumColorSlider(
+    color: Color,
+    onColorChange: (Color) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val hue = remember(color) { hueOf(color) }
+    val previewColor = spectrumColor(hue)
+    val spectrum = remember {
+        listOf(0f, 30f, 60f, 120f, 180f, 220f, 270f, 315f, 360f).map(::spectrumColor)
+    }
+
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Акцент приложения", color = Color.LightGray, fontSize = 14.sp)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(previewColor.hexRgb(), color = previewColor.liquidAccent(), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Box(
+                    Modifier
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .background(previewColor)
+                        .border(1.dp, Color.White.copy(alpha = 0.55f), CircleShape)
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(18.dp)
+            ) {
+                drawLine(
+                    brush = Brush.horizontalGradient(spectrum),
+                    start = Offset(9.dp.toPx(), size.height / 2f),
+                    end = Offset(size.width - 9.dp.toPx(), size.height / 2f),
+                    strokeWidth = size.height,
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = Color.White.copy(alpha = 0.22f),
+                    start = Offset(9.dp.toPx(), size.height / 2f),
+                    end = Offset(size.width - 9.dp.toPx(), size.height / 2f),
+                    strokeWidth = 1.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+            Slider(
+                value = hue,
+                onValueChange = { onColorChange(spectrumColor(it)) },
+                valueRange = 0f..360f,
+                colors = SliderDefaults.colors(
+                    thumbColor = previewColor.liquidAccent(),
+                    activeTrackColor = Color.Transparent,
+                    inactiveTrackColor = Color.Transparent
+                )
+            )
+        }
+    }
+}
+
+@Composable
 fun SettingsToggle(
     title: String,
     subtitle: String? = null,
@@ -482,19 +810,34 @@ fun SettingsToggle(
     onCheckedChange: (Boolean) -> Unit,
     activeColor: Color
 ) {
+    val accent = activeColor.liquidAccent()
     Row(
         Modifier.fillMaxWidth().clickable { onCheckedChange(!checked) }.padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, null, tint = if (checked) activeColor else Color.Gray)
+        Icon(
+            icon,
+            null,
+            tint = if (checked) accent else Color.Gray,
+            modifier = if (checked) Modifier.shadow(8.dp, CircleShape) else Modifier
+        )
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Text(title, color = Color.White, fontSize = 16.sp)
             if (subtitle != null) Text(subtitle, color = Color.Gray, fontSize = 12.sp, lineHeight = 14.sp)
         }
         Switch(
-            checked = checked, onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(checkedThumbColor = activeColor, checkedTrackColor = activeColor.copy(0.3f), uncheckedThumbColor = Color.LightGray, uncheckedTrackColor = Color.DarkGray)
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = if (checked) Modifier.shadow(10.dp, CircleShape) else Modifier,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = accent.copy(0.55f),
+                checkedBorderColor = accent.copy(0.9f),
+                uncheckedThumbColor = Color.LightGray,
+                uncheckedTrackColor = Color.DarkGray.copy(alpha = 0.7f),
+                uncheckedBorderColor = Color.White.copy(alpha = 0.18f)
+            )
         )
     }
 }
@@ -506,6 +849,7 @@ fun SettingsToggleSmall(
     onCheckedChange: (Boolean) -> Unit,
     activeColor: Color
 ) {
+    val accent = activeColor.liquidAccent()
     Row(
         Modifier.fillMaxWidth().clickable { onCheckedChange(!checked) }.padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -513,8 +857,19 @@ fun SettingsToggleSmall(
         Spacer(Modifier.width(40.dp))
         Text(title, color = Color.LightGray, fontSize = 14.sp, modifier = Modifier.weight(1f))
         Switch(
-            checked = checked, onCheckedChange = onCheckedChange, modifier = Modifier.scale(0.8f),
-            colors = SwitchDefaults.colors(checkedThumbColor = activeColor, checkedTrackColor = activeColor.copy(0.3f))
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = Modifier
+                .scale(0.8f)
+                .then(if (checked) Modifier.shadow(8.dp, CircleShape) else Modifier),
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = accent.copy(0.55f),
+                checkedBorderColor = accent.copy(0.9f),
+                uncheckedThumbColor = Color.LightGray,
+                uncheckedTrackColor = Color.DarkGray.copy(alpha = 0.7f),
+                uncheckedBorderColor = Color.White.copy(alpha = 0.18f)
+            )
         )
     }
 }
@@ -542,18 +897,41 @@ fun SettingsSlider(
     label: String,
     activeColor: Color
 ) {
+    val accent = activeColor.liquidAccent()
     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(title, color = Color.White, fontSize = 16.sp)
-            Text(label, color = activeColor, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text(label, color = accent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         }
         Slider(
             value = value,
             onValueChange = onValueChange,
             valueRange = range,
-            colors = SliderDefaults.colors(thumbColor = activeColor, activeTrackColor = activeColor, inactiveTrackColor = Color.DarkGray)
+            colors = SliderDefaults.colors(thumbColor = accent, activeTrackColor = accent, inactiveTrackColor = Color.DarkGray)
         )
     }
+}
+
+private fun hueOf(color: Color): Float {
+    val hsv = FloatArray(3)
+    AndroidColor.colorToHSV(color.toArgb(), hsv)
+    return hsv[0].coerceIn(0f, 360f)
+}
+
+private fun spectrumColor(hue: Float): Color {
+    return Color(
+        AndroidColor.HSVToColor(
+            floatArrayOf(
+                hue.coerceIn(0f, 360f),
+                0.92f,
+                0.96f
+            )
+        )
+    )
+}
+
+private fun Color.hexRgb(): String {
+    return String.format(Locale.US, "#%06X", toArgb() and 0x00FFFFFF)
 }
 
 

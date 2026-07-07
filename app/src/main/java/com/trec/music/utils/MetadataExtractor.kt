@@ -22,12 +22,19 @@ package com.trec.music.utils
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import com.trec.music.data.TrecTrackEnhanced
 import java.io.File
 
 object MetadataExtractor {
     private const val TAG = "MetadataExtractor"
+
+    private fun parseTrackNumber(value: String?): Int? {
+        val normalized = TrackMetadataText.normalizeValue(value) ?: return null
+        val head = normalized.substringBefore("/")
+        return head.toIntOrNull()?.takeIf { it > 0 }
+    }
     
     fun extractMetadata(context: Context, uri: Uri): TrecTrackEnhanced {
         val retriever = MediaMetadataRetriever()
@@ -35,18 +42,41 @@ object MetadataExtractor {
             retriever.setDataSource(context, uri)
             
             // Извлекаем все возможные метаданные
-            val title = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE) ?: "Неизвестный трек"
-            val artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
-            val album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
-            val albumArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)
-            val genre = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)
-            val composer = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER)
-            val trackNumber = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)?.toIntOrNull()
+            val fallbackTitle = File(uri.path ?: uri.toString()).nameWithoutExtension
+            val rawTitle = TrackMetadataText.normalizeValue(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
+            ) ?: TrackMetadataText.normalizeValue(fallbackTitle) ?: "Unknown Track"
+            val (inferredArtist, inferredTitle) = TrackMetadataText.inferArtistAndTitle(rawTitle)
+
+            val artist = TrackMetadataText.normalizeValue(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+            ) ?: inferredArtist
+            val album = TrackMetadataText.normalizeValue(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
+            )
+            val albumArtist = TrackMetadataText.normalizeValue(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)
+            )
+            val genre = TrackMetadataText.normalizeValue(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE)
+            )
+            val composer = TrackMetadataText.normalizeValue(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER)
+            )
+            val trackNumber = parseTrackNumber(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)
+            )
             val year = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR)?.toIntOrNull()
             val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
             val bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toIntOrNull()
-            val sampleRate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull()
-            val mimeType = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
+            val sampleRate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toIntOrNull()
+            } else {
+                null
+            }
+            val mimeType = TrackMetadataText.normalizeValue(
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
+            )
             
             // Размер файла
             val fileSize = if (uri.scheme == "file") {
@@ -79,7 +109,7 @@ object MetadataExtractor {
             
             TrecTrackEnhanced(
                 uri = uri,
-                title = title,
+                title = inferredTitle,
                 artist = artist,
                 album = album,
                 durationMs = duration,
@@ -102,7 +132,8 @@ object MetadataExtractor {
             // Возвращаем базовую информацию при ошибке
             TrecTrackEnhanced(
                 uri = uri,
-                title = File(uri.path ?: uri.toString()).nameWithoutExtension,
+                title = TrackMetadataText.normalizeValue(File(uri.path ?: uri.toString()).nameWithoutExtension)
+                    ?: "Unknown Track",
                 artist = null,
                 album = null,
                 durationMs = 0L,

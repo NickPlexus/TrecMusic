@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import com.trec.music.R
 import kotlin.math.sqrt
 
 class SensorHandler(private val vm: MusicViewModel) : SensorEventListener {
@@ -47,9 +48,8 @@ class SensorHandler(private val vm: MusicViewModel) : SensorEventListener {
     fun initSoundPool(context: Context) {
         val attr = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
         soundPool = SoundPool.Builder().setMaxStreams(2).setAudioAttributes(attr).build()
-        listOf("scratch", "scratch1", "scratch2", "scratch3", "scratch4").forEach { name ->
-            val id = context.resources.getIdentifier(name, "raw", context.packageName)
-            if (id != 0) soundPool?.load(context, id, 1)?.let { scratchSoundIds.add(it) }
+        listOf(R.raw.scratch, R.raw.scratch1, R.raw.scratch2, R.raw.scratch3, R.raw.scratch4).forEach { rawId ->
+            soundPool?.load(context, rawId, 1)?.let { scratchSoundIds.add(it) }
         }
     }
 

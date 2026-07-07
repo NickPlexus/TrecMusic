@@ -20,3 +20,6 @@
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
 # Защита FFmpeg от удаления при оптимизации
+
+# ONNX Runtime (avoid R8 stripping, if minify is enabled in the future)
+-keep class ai.onnxruntime.** { *; }

@@ -17,7 +17,6 @@
 package com.trec.music
 
 import android.app.Application
-import android.content.Intent
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -28,10 +27,7 @@ class TrecApplication : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
-        CrashShield.install(
-            app = this,
-            restartIntent = Intent(this, MainActivity::class.java)
-        )
+        CrashShield.install(app = this)
     }
 
     override fun newImageLoader(): ImageLoader {

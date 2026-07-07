@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.trec.music.ui.theme.liquidAccent
 import com.trec.music.viewmodel.MusicViewModel
 import kotlin.math.PI
 import kotlin.math.atan2
@@ -146,7 +147,7 @@ fun VinylDisk(viewModel: MusicViewModel, modifier: Modifier = Modifier) {
                     .size(120.dp)
                     .rotate(currentRotation)
                     .clip(CircleShape)
-                    .background(viewModel.dominantColor),
+                    .background(viewModel.dominantColor.liquidAccent()),
                 contentAlignment = Alignment.Center
             ) {
                 // Текст всегда отрисовывается, даже под обложкой (на всякий случай)

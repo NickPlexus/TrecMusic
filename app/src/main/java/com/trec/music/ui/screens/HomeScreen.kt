@@ -29,7 +29,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -72,8 +72,11 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import coil.compose.AsyncImage
 import com.trec.music.data.TrecTrackEnhanced
-import com.trec.music.ui.components.EnhancedBreathingBackground
 import com.trec.music.ui.LocalBottomOverlayPadding
+import com.trec.music.ui.theme.TrecBlack
+import com.trec.music.ui.theme.liquidAccent
+import com.trec.music.ui.theme.liquidGlassSurface
+import com.trec.music.ui.theme.liquidOnAccent
 import com.trec.music.viewmodel.MusicViewModel
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -93,16 +96,24 @@ private data class UsageCounters(
     val totalTracksStarted: Int
 )
 
+private data class HomeLibraryStats(
+    val totalMinutes: Int,
+    val recentTracks: List<TrecTrackEnhanced>,
+    val topPlayedTracks: List<Pair<TrecTrackEnhanced, Int>>
+)
+
+private fun homeTrackKey(uri: String, index: Int): String = "$uri#$index"
+
 @Composable
 fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
     val accent by animateColorAsState(
-        targetValue = viewModel.dominantColor,
+        targetValue = viewModel.dominantColor.liquidAccent(),
         animationSpec = tween(1000),
         label = "homeAccent"
     )
     val bottomOverlay = LocalBottomOverlayPadding.current
 
-    val tracks = viewModel.playlist
+    val trackCount = viewModel.playlist.size
     val favoritesCount = viewModel.favoriteTracks.size
     var totalMinutes by remember { mutableIntStateOf(0) }
     var recentTracks by remember { mutableStateOf<List<TrecTrackEnhanced>>(emptyList()) }
@@ -117,22 +128,27 @@ fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
     var topPlayed by remember { mutableStateOf(viewModel.prefs.getTopPlayedUris(8)) }
 
     // Переносим тяжелую сортировку 1000+ треков в фоновый поток!
-    LaunchedEffect(tracks.size, viewModel.playlistUpdateTrigger, topPlayed) {
-        withContext(Dispatchers.Default) {
-            totalMinutes = (tracks.sumOf { it.durationMs } / 60000L).toInt()
-
-            recentTracks = tracks
+    LaunchedEffect(trackCount, viewModel.playlistUpdateTrigger, topPlayed) {
+        val tracksSnapshot = viewModel.playlistSnapshot()
+        val topPlayedSnapshot = topPlayed.toList()
+        val stats = withContext(Dispatchers.Default) {
+            HomeLibraryStats(
+                totalMinutes = (tracksSnapshot.sumOf { it.durationMs } / 60000L).toInt(),
+                recentTracks = tracksSnapshot
                 .sortedByDescending { it.dateAdded }
                 .distinctBy { it.uri.toString() }
-                .take(8)
-
-            topPlayedTracks = topPlayed
+                .take(8),
+                topPlayedTracks = topPlayedSnapshot
                 .mapNotNull { (uri, count) ->
-                    val track = tracks.firstOrNull { it.uri.toString() == uri }
+                    val track = tracksSnapshot.firstOrNull { it.uri.toString() == uri }
                     track?.let { it to count }
                 }
                 .distinctBy { it.first.uri.toString() }
+            )
         }
+        totalMinutes = stats.totalMinutes
+        recentTracks = stats.recentTracks
+        topPlayedTracks = stats.topPlayedTracks
     }
 
     // Легкие счетчики можно обновлять чаще, но "Top played" трогать каждую секунду нельзя —
@@ -175,13 +191,10 @@ fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
     }
 
     fun playTrack(track: TrecTrackEnhanced) {
-        val index = viewModel.playlist.indexOfFirst { it.uri == track.uri }
-        if (index >= 0) viewModel.playTrackAtIndex(index)
+        viewModel.playTrackFromPlaylistByUri("All Tracks", track.uri)
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        EnhancedBreathingBackground(color = accent)
-
+    Box(modifier = Modifier.fillMaxSize().background(TrecBlack)) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -220,7 +233,7 @@ fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
 
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    StatCard("Треков", tracks.size.toString(), Icons.Rounded.GraphicEq, accent, Modifier.weight(1f))
+                    StatCard("Треков", trackCount.toString(), Icons.Rounded.GraphicEq, accent, Modifier.weight(1f))
                     StatCard("Избранных", favoritesCount.toString(), Icons.Rounded.Favorite, accent, Modifier.weight(1f))
                     StatCard("Минут", totalMinutes.toString(), Icons.Rounded.Equalizer, accent, Modifier.weight(1f))
                 }
@@ -267,7 +280,7 @@ fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
                     }
                 }
             } else {
-                items(recentTracks, key = { it.uri.toString() }) { track ->
+                itemsIndexed(recentTracks, key = { index, track -> homeTrackKey(track.uri.toString(), index) }) { _, track ->
                     RecentTrackRow(track = track, viewModel = viewModel, accent = accent, onClick = { playTrack(track) })
                 }
             }
@@ -285,7 +298,7 @@ fun HomeScreen(viewModel: MusicViewModel, navController: NavController) {
                     }
                 }
             } else {
-                items(topPlayedTracks, key = { it.first.uri.toString() }) { (track, count) ->
+                itemsIndexed(topPlayedTracks, key = { index, pair -> homeTrackKey(pair.first.uri.toString(), index) }) { _, (track, count) ->
                     MostPlayedTrackRow(
                         track = track,
                         playCount = count,
@@ -318,8 +331,6 @@ private fun HeaderBlock(title: String, subtitle: String, onSettings: () -> Unit)
 
 @Composable
 private fun NowPlayingCard(viewModel: MusicViewModel, accent: Color, onOpenLibrary: () -> Unit) {
-    val currentTrack = viewModel.playlist.find { it.uri == viewModel.currentTrackUri }
-
     GlassCard {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -355,7 +366,7 @@ private fun NowPlayingCard(viewModel: MusicViewModel, accent: Color, onOpenLibra
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = viewModel.currentTrackArtist ?: currentTrack?.artist ?: "Unknown Artist",
+                        text = viewModel.getCurrentDisplayArtist(),
                         color = Color.White.copy(alpha = 0.68f),
                         fontSize = 12.sp,
                         maxLines = 1
@@ -485,7 +496,7 @@ private fun RecentTrackRow(
             Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(track.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(track.artist ?: "Unknown Artist", color = Color.White.copy(alpha = 0.62f), fontSize = 12.sp, maxLines = 1)
+                Text(track.getDisplayArtist(), color = Color.White.copy(alpha = 0.62f), fontSize = 12.sp, maxLines = 1)
             }
             Surface(
                 color = accent.copy(alpha = 0.2f),
@@ -522,11 +533,13 @@ private fun GradientTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val shape = RoundedCornerShape(16.dp)
     Box(
         modifier = modifier
             .height(106.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(shape)
             .background(Brush.linearGradient(listOf(c1, c2)))
+            .border(1.dp, Color.White.copy(alpha = 0.22f), shape)
             .clickable(onClick = onClick)
             .padding(12.dp)
     ) {
@@ -539,10 +552,13 @@ private fun GradientTile(
 
 @Composable
 private fun ActionPill(text: String, icon: ImageVector, accent: Color, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(50)
     Surface(
-        modifier = Modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(50),
-        color = Color.White.copy(alpha = 0.08f),
+        modifier = Modifier
+            .liquidGlassSurface(accent, shape, fillAlpha = 0.07f)
+            .clickable(onClick = onClick),
+        shape = shape,
+        color = Color.Transparent,
         tonalElevation = 0.dp
     ) {
         Row(
@@ -635,7 +651,7 @@ private fun MostPlayedTrackRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(track.title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    track.artist ?: "Unknown Artist",
+                    track.getDisplayArtist(),
                     color = Color.White.copy(alpha = 0.62f),
                     fontSize = 12.sp,
                     maxLines = 1
@@ -901,24 +917,63 @@ private fun MusicFactsCard(accent: Color) {
 
 @Composable
 private fun SmartButton(text: String, color: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Surface(
-        modifier = modifier.clickable(onClick = onClick),
-        shape = RoundedCornerShape(10.dp),
-        color = color
+    val shape = RoundedCornerShape(10.dp)
+    val isTonal = color.alpha > 0.45f
+    val liquid = if (isTonal) color.liquidAccent() else MaterialTheme.colorScheme.primary
+
+    Box(
+        modifier = modifier
+            .height(48.dp)
+            .clip(shape)
+            .background(
+                if (isTonal) {
+                    Brush.linearGradient(
+                        listOf(
+                            Color.White.copy(alpha = 0.38f),
+                            liquid.copy(alpha = 0.92f),
+                            liquid.copy(alpha = 0.64f)
+                        )
+                    )
+                } else {
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.White.copy(alpha = 0.15f),
+                            Color.White.copy(alpha = 0.08f)
+                        )
+                    )
+                }
+            )
+            .border(
+                1.dp,
+                if (isTonal) liquid.copy(alpha = 0.45f) else Color.White.copy(alpha = 0.14f),
+                shape
+            )
+            .clickable(onClick = onClick)
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(vertical = 10.dp)) {
-            Text(text = text, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 8.dp)
+        ) {
+            Text(
+                text = text,
+                color = if (isTonal) liquid.liquidOnAccent() else Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
 
 @Composable
 private fun GlassCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color.White.copy(alpha = 0.06f))
-            .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(16.dp))
+            .liquidGlassSurface(MaterialTheme.colorScheme.primary, shape, fillAlpha = 0.07f)
     ) {
         Column(content = content)
     }

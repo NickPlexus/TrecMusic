@@ -26,6 +26,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
@@ -42,7 +43,7 @@ private fun darkScheme(accent: Color) = darkColorScheme(
     secondary = accent,
     background = TrecBlack,
     surface = TrecDarkGray,
-    onPrimary = Color.White,
+    onPrimary = if (accent.luminance() > 0.58f) Color(0xFF070A10) else Color.White,
     onBackground = Color.White,
     onSurface = Color.White
 )
@@ -70,7 +71,7 @@ fun TrecMusicTheme(
         }
     }
 
-    val scheme = darkScheme(accentColor)
+    val scheme = darkScheme(accentColor.liquidAccent())
     MaterialTheme(
         colorScheme = scheme,
         content = content

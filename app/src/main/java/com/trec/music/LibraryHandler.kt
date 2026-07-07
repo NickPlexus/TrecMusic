@@ -78,18 +78,25 @@ class LibraryHandler(private val vm: MusicViewModel) {
 
     fun getPlaylistTracks(name: String): List<TrecTrackEnhanced> {
         val uris = vm.repository.getTracksInPlaylist(name)
+        val tracksSnapshot = vm.playlistSnapshot()
+        val archivedUris = vm.archivedTrackUrisSnapshot()
         return uris.mapNotNull { uriStr ->
-            vm.playlist.find { it.uri.toString() == uriStr }
+            tracksSnapshot.find { it.uri.toString() == uriStr && !archivedUris.contains(uriStr) }
         }
     }
 
     fun loadTrackCache() {
-        val cached = vm.repository.getTrackCache()
-        if (cached.isNotEmpty() && vm.playlist.isEmpty()) {
-            // Иногда MediaStore/кэш могут содержать дубли одного и того же Uri → это ломает Lazy списки (key collision).
-            val unique = cached.distinctBy { it.uri.toString() }
-            vm.playlist.addAll(unique)
-            vm.playlistUpdateTrigger++
+        vm.viewModelScope.launch {
+            val cached = vm.repository.getTrackCache()
+            if (cached.isNotEmpty() && vm.playlist.isEmpty()) {
+                // Иногда MediaStore/кэш могут содержать дубли одного и того же Uri → это ломает Lazy списки (key collision).
+                val archivedUris = vm.archivedTrackUrisSnapshot()
+                val unique = cached
+                    .distinctBy { it.uri.toString() }
+                    .filterNot { archivedUris.contains(it.uri.toString()) }
+                vm.playlist.addAll(unique)
+                vm.playlistUpdateTrigger++
+            }
         }
     }
 
@@ -115,8 +122,10 @@ class LibraryHandler(private val vm: MusicViewModel) {
         // Обновляем UI состояния строго в главном потоке
         withContext(Dispatchers.Main) {
             if (tracks.isEmpty() && isAutoLoad) {
-                vm.repository.clearLibraryData()
-                vm.repository.clearTrackCache()
+                withContext(Dispatchers.IO) {
+                    vm.repository.clearLibraryData()
+                    vm.repository.clearTrackCache()
+                }
             }
             if (tracks.isNotEmpty()) {
                 val used = updatePlayerPlaylist(tracks)
@@ -153,7 +162,10 @@ class LibraryHandler(private val vm: MusicViewModel) {
     private fun updatePlayerPlaylist(tracks: List<TrecTrackEnhanced>): List<TrecTrackEnhanced> {
         // Мы обновляем ТОЛЬКО визуальный список для UI.
         // Дедуп по Uri важен: одинаковые ключи в LazyColumn/LazyRow приводят к крэшу Compose.
-        val unique = tracks.distinctBy { it.uri.toString() }
+        val archivedUris = vm.archivedTrackUrisSnapshot()
+        val unique = tracks
+            .distinctBy { it.uri.toString() }
+            .filterNot { archivedUris.contains(it.uri.toString()) }
         vm.playlist.clear()
         vm.playlist.addAll(unique)
         vm.playlistUpdateTrigger++
@@ -167,46 +179,144 @@ class LibraryHandler(private val vm: MusicViewModel) {
     }
 
     fun deleteFileFromDevice(context: Context, track: TrecTrackEnhanced) {
+        deleteFilesFromDevice(context, listOf(track))
+    }
+
+    fun deleteFilesFromDevice(context: Context, tracks: List<TrecTrackEnhanced>) {
+        val uniqueTracks = tracks.distinctBy { it.uri.toString() }
+        if (uniqueTracks.isEmpty()) return
+
         vm.viewModelScope.launch {
-            val success = withContext(Dispatchers.IO) {
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        context.contentResolver.delete(track.uri, null, null)
-                        true
-                    } else {
-                        val docFile = androidx.documentfile.provider.DocumentFile.fromSingleUri(context, track.uri)
-                        docFile?.delete() == true
+            val successfulTracks = withContext(Dispatchers.IO) {
+                uniqueTracks.filter { track ->
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            context.contentResolver.delete(track.uri, null, null)
+                            true
+                        } else {
+                            val docFile = androidx.documentfile.provider.DocumentFile.fromSingleUri(context, track.uri)
+                            docFile?.delete() == true
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        false
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    false
                 }
             }
 
             // Обновляем UI и коллекции на главном потоке
-            if (success) {
-                vm.playlist.remove(track)
+            if (successfulTracks.isNotEmpty()) {
+                val deletedUris = successfulTracks.map { it.uri.toString() }.toSet()
+                vm.playlist.removeAll { deletedUris.contains(it.uri.toString()) }
+                vm.archivedTracks.removeAll { deletedUris.contains(it.uri.toString()) }
+                vm.favoriteTracks.removeAll(deletedUris)
+                if (vm.currentTrackUri?.toString() in deletedUris) vm.isCurrentTrackFav = false
+                vm.repository.saveFavorites(vm.favoriteTracksSnapshot())
 
                 // Снимаем снепшот ДО перехода в IO, иначе ConcurrentModificationException
                 val playlistsSnapshot = vm.userPlaylists.toList()
-                val trackCacheSnapshot = vm.playlist.toList()
-                val trackUriStr = track.uri.toString()
+                val trackCacheSnapshot = vm.playlistSnapshot()
 
                 withContext(Dispatchers.IO) {
+                    deletedUris.forEach { uri -> vm.repository.removeArchivedTrack(uri) }
                     playlistsSnapshot.forEach { plName ->
                         val tracks = vm.repository.getTracksInPlaylist(plName)
-                        if (tracks.contains(trackUriStr)) {
-                            vm.repository.removeTrackFromPlaylist(plName, trackUriStr)
+                        deletedUris.forEach { uri ->
+                            if (tracks.contains(uri)) {
+                                vm.repository.removeTrackFromPlaylist(plName, uri)
+                            }
                         }
                     }
                     vm.repository.saveTrackCache(trackCacheSnapshot)
                 }
 
+                deletedUris.forEach { uri -> vm.removeTrackFromActiveQueue(uri) }
                 vm.playlistUpdateTrigger++
-                Toast.makeText(context, "Файл удалён", Toast.LENGTH_SHORT).show()
+                val message = if (successfulTracks.size == 1) {
+                    "Файл удалён"
+                } else {
+                    "Удалено файлов: ${successfulTracks.size}"
+                }
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(context, "Ошибка удаления: нужны права", Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    fun archiveTrack(context: Context, track: TrecTrackEnhanced) {
+        archiveTracks(context, listOf(track))
+    }
+
+    fun archiveTracks(context: Context, tracks: List<TrecTrackEnhanced>) {
+        val uniqueTracks = tracks
+            .distinctBy { it.uri.toString() }
+            .filterNot { vm.archivedTrackUrisSnapshot().contains(it.uri.toString()) }
+        if (uniqueTracks.isEmpty()) {
+            Toast.makeText(context, "Треки уже в архиве", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        vm.viewModelScope.launch {
+            val playlistsSnapshot = vm.userPlaylists.toList()
+            val archivedUris = uniqueTracks.map { it.uri.toString() }.toSet()
+
+            withContext(Dispatchers.IO) {
+                uniqueTracks.forEach { track -> vm.repository.archiveTrack(track) }
+                playlistsSnapshot.forEach { plName ->
+                    val tracksInPlaylist = vm.repository.getTracksInPlaylist(plName)
+                    archivedUris.forEach { uri ->
+                        if (tracksInPlaylist.contains(uri)) {
+                            vm.repository.removeTrackFromPlaylist(plName, uri)
+                        }
+                    }
+                }
+            }
+
+            vm.playlist.removeAll { archivedUris.contains(it.uri.toString()) }
+            vm.archivedTracks.removeAll { archivedUris.contains(it.uri.toString()) }
+            vm.archivedTracks.addAll(0, uniqueTracks)
+
+            if (vm.favoriteTracks.removeAll(archivedUris)) {
+                if (vm.currentTrackUri?.toString() in archivedUris) vm.isCurrentTrackFav = false
+                vm.repository.saveFavorites(vm.favoriteTracksSnapshot())
+            }
+
+            val trackCacheSnapshot = vm.playlistSnapshot()
+            withContext(Dispatchers.IO) {
+                vm.repository.saveTrackCache(trackCacheSnapshot)
+            }
+
+            archivedUris.forEach { uri -> vm.removeTrackFromActiveQueue(uri) }
+            vm.playlistUpdateTrigger++
+            val message = if (uniqueTracks.size == 1) {
+                "Трек отправлен в архив"
+            } else {
+                "Отправлено в архив: ${uniqueTracks.size}"
+            }
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun restoreArchivedTrack(context: Context, track: TrecTrackEnhanced) {
+        val trackUriStr = track.uri.toString()
+        vm.viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                vm.repository.unarchiveTrack(trackUriStr)
+            }
+
+            vm.archivedTracks.removeAll { it.uri.toString() == trackUriStr }
+            if (vm.playlist.none { it.uri.toString() == trackUriStr }) {
+                vm.playlist.add(track)
+            }
+
+            val trackCacheSnapshot = vm.playlistSnapshot()
+            withContext(Dispatchers.IO) {
+                vm.repository.saveTrackCache(trackCacheSnapshot)
+            }
+
+            vm.playlistUpdateTrigger++
+            Toast.makeText(context, "Трек возвращён из архива", Toast.LENGTH_SHORT).show()
         }
     }
 }

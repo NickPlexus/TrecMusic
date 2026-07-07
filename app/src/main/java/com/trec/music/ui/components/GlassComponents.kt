@@ -15,15 +15,16 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -31,12 +32,20 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.trec.music.ui.theme.TrecDarkGray
+import com.trec.music.ui.theme.liquidAccent
+import com.trec.music.ui.theme.liquidGlassSurface
+import com.trec.music.ui.theme.liquidOnAccent
+import com.trec.music.ui.theme.TrecRadius
+import com.trec.music.ui.theme.TrecSpacing
+import com.trec.music.ui.theme.TrecTouchTarget
 
 @Composable
 fun GlassDialog(
     onDismiss: () -> Unit,
     content: @Composable () -> Unit
 ) {
+    val dialogShape = RoundedCornerShape(TrecRadius.Dialog)
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -60,8 +69,19 @@ fun GlassDialog(
             // Само окно диалога
             Surface(
                 modifier = Modifier
-                    .padding(24.dp)
+                    .padding(TrecSpacing.Xl)
                     .fillMaxWidth()
+                    .shadow(
+                        elevation = 26.dp,
+                        shape = dialogShape,
+                        ambientColor = Color.Transparent,
+                        spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)
+                    )
+                    .liquidGlassSurface(
+                        accent = MaterialTheme.colorScheme.primary,
+                        shape = dialogShape,
+                        fillAlpha = 0.13f
+                    )
                     // !!! ГЛАВНЫЙ ФИКС !!!
                     // enabled = true (было false).
                     // Теперь Surface "съедает" клик, не пуская его в Box.
@@ -72,14 +92,13 @@ fun GlassDialog(
                         indication = null,
                         enabled = true,
                         onClick = {}
-                    )
-                    .border(1.dp, Color.White.copy(0.15f), RoundedCornerShape(28.dp)),
-                shape = RoundedCornerShape(28.dp),
-                color = TrecDarkGray.copy(alpha = 0.95f),
+                    ),
+                shape = dialogShape,
+                color = TrecDarkGray.copy(alpha = 0.30f),
                 tonalElevation = 16.dp,
                 shadowElevation = 16.dp
             ) {
-                Box(Modifier.padding(24.dp)) {
+                Box(Modifier.padding(TrecSpacing.Xl)) {
                     content()
                 }
             }
@@ -94,27 +113,56 @@ fun GlassButton(
     color: Color,
     modifier: Modifier = Modifier
 ) {
+    val liquid = color.liquidAccent()
+    val shape = RoundedCornerShape(TrecRadius.Control)
+
     Box(
         modifier = modifier
+            .defaultMinSize(minHeight = TrecTouchTarget.Min)
             .height(50.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .shadow(
+                elevation = 12.dp,
+                shape = shape,
+                ambientColor = Color.Transparent,
+                spotColor = liquid.copy(alpha = 0.34f)
+            )
+            .clip(shape)
             .background(
-                Brush.horizontalGradient(
-                    listOf(color.copy(alpha = 0.9f), color.copy(alpha = 0.6f))
+                Brush.linearGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.56f),
+                        liquid.copy(alpha = 0.92f),
+                        liquid.copy(alpha = 0.62f)
+                    )
                 )
+            )
+            .border(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.58f),
+                        liquid.copy(alpha = 0.62f),
+                        Color.White.copy(alpha = 0.18f)
+                    )
+                ),
+                shape = shape
             )
             .clickable(
                 onClick = onClick,
                 interactionSource = remember { MutableInteractionSource() },
-                indication = androidx.compose.material.ripple.rememberRipple(color = Color.White)
+                indication = ripple(color = liquid.copy(alpha = 0.65f)),
+                role = Role.Button
             ),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
-            color = Color.White,
+            color = liquid.liquidOnAccent(),
             fontWeight = FontWeight.Bold,
-            fontSize = 16.sp
+            fontSize = 16.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = TrecSpacing.Md)
         )
     }
 }
@@ -124,7 +172,7 @@ fun GlassTextButton(text: String, onClick: () -> Unit) {
     TextButton(onClick = onClick) {
         Text(
             text = text,
-            color = Color.White.copy(0.7f),
+            color = MaterialTheme.colorScheme.primary.liquidAccent(),
             fontWeight = FontWeight.Medium
         )
     }
@@ -136,7 +184,7 @@ fun InfoRow(label: String, value: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
+            .padding(vertical = TrecSpacing.Xs),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(
@@ -151,7 +199,7 @@ fun InfoRow(label: String, value: String) {
             fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 16.dp).weight(1f, fill = false)
+            modifier = Modifier.padding(start = TrecSpacing.Lg).weight(1f, fill = false)
         )
     }
 }

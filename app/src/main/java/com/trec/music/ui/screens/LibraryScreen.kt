@@ -66,6 +66,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -74,6 +75,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
+import com.trec.music.data.TrecTrackEnhanced
 import com.trec.music.ui.components.GlassButton
 import com.trec.music.ui.components.GlassDialog
 import com.trec.music.ui.components.GlassDropdownHeader
@@ -84,10 +86,16 @@ import com.trec.music.ui.components.TrackRow
 import com.trec.music.ui.components.VinylPlaceholder
 import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.ui.theme.TrecBlack
+import com.trec.music.ui.theme.liquidAccent
+import com.trec.music.ui.theme.liquidGlassSurface
+import com.trec.music.utils.DuplicateTrackGroup
+import com.trec.music.utils.TrackDuplicateDetector
 import com.trec.music.viewmodel.MusicViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -116,6 +124,15 @@ private data class ListDragState(
     val itemSize: IntSize
 )
 
+private fun trackListKey(trackUri: String, index: Int): String = "$trackUri#$index"
+
+private enum class DuplicateCleanupAction {
+    ARCHIVE,
+    DELETE
+}
+
+private const val DUPLICATE_GROUP_SKIP = "__trec_skip_duplicate_group__"
+
 // --- ГЛАВНЫЙ ЭКРАН БИБЛИОТЕКИ ---
 @Composable
 fun LibraryScreen(viewModel: MusicViewModel) {
@@ -128,6 +145,9 @@ fun LibraryScreen(viewModel: MusicViewModel) {
 
     AnimatedContent(
         targetState = openedPlaylistName,
+        modifier = Modifier
+            .fillMaxSize()
+            .background(TrecBlack),
         label = "LibraryNav",
         transitionSpec = {
             if (targetState != null) {
@@ -229,6 +249,7 @@ fun PlaylistsOverview(viewModel: MusicViewModel, onOpenPlaylist: (String) -> Uni
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(TrecBlack)
             .graphicsLayer { clip = false }
     ) {
         Column(
@@ -466,22 +487,27 @@ fun PlaylistEditorScreen(
     val density = androidx.compose.ui.platform.LocalDensity.current
     val dragScope = rememberCoroutineScope()
     val isSystem = playlistName == "All Tracks"
+    val accent = viewModel.dominantColor.liquidAccent()
 
     // --- State ---
     var searchQuery by remember { mutableStateOf("") }
     var sortOption by remember { mutableStateOf(SortOption.CUSTOM) }
     var showSortDialog by remember { mutableStateOf(false) }
+    var showLibraryOptions by remember { mutableStateOf(false) }
+    var showDuplicateCleanupDialog by remember { mutableStateOf(false) }
+    var duplicateScanInProgress by remember { mutableStateOf(false) }
+    var duplicateGroups by remember { mutableStateOf<List<DuplicateTrackGroup>>(emptyList()) }
 
     var editClickCounter by remember { mutableIntStateOf(0) }
     var showSwitchToCustomDialog by remember { mutableStateOf(false) }
 
     // Данные треков
-    val rawTracks = remember(viewModel.playlist, viewModel.userPlaylists, playlistName, viewModel.playlistUpdateTrigger) {
-        if (isSystem) viewModel.playlist else viewModel.getPlaylistTracks(playlistName)
+    val rawTracks = remember(viewModel.userPlaylists, playlistName, viewModel.playlistUpdateTrigger) {
+        if (isSystem) viewModel.playlistSnapshot() else viewModel.getPlaylistTracks(playlistName)
     }
 
     // Локальный список для перетаскивания
-    var localTracks by remember { mutableStateOf(rawTracks) }
+    var localTracks by remember { mutableStateOf(rawTracks.distinctBy { it.uri.toString() }) }
 
     val displayTracks = remember(localTracks, searchQuery, sortOption) {
         var list = localTracks.distinctBy { it.uri.toString() } // ← защита от дублей
@@ -503,8 +529,8 @@ fun PlaylistEditorScreen(
     }
 
     // Синхронизируем локальный список при изменении rawTracks
-    LaunchedEffect(rawTracks) {
-        localTracks = rawTracks
+    LaunchedEffect(rawTracks, viewModel.playlistUpdateTrigger) {
+        localTracks = rawTracks.distinctBy { it.uri.toString() }
     }
 
     val folderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -594,9 +620,56 @@ fun PlaylistEditorScreen(
         }
     }
 
+    if (showLibraryOptions) {
+        GlassDropdownMenu(
+            expanded = showLibraryOptions,
+            onDismissRequest = { showLibraryOptions = false }
+        ) {
+            GlassDropdownHeader("Все треки")
+            GlassDropdownMenuItem(
+                text = "Найти повторы",
+                icon = Icons.Default.Search,
+                onClick = {
+                    showLibraryOptions = false
+                    showDuplicateCleanupDialog = true
+                    duplicateScanInProgress = true
+                    duplicateGroups = emptyList()
+                    dragScope.launch {
+                        val tracksSnapshot = viewModel.playlistSnapshot()
+                        duplicateGroups = withContext(Dispatchers.Default) {
+                            TrackDuplicateDetector.findDuplicateGroups(tracksSnapshot)
+                        }
+                        duplicateScanInProgress = false
+                    }
+                }
+            )
+        }
+    }
+
+    if (showDuplicateCleanupDialog) {
+        DuplicateCleanupDialog(
+            viewModel = viewModel,
+            groups = duplicateGroups,
+            isScanning = duplicateScanInProgress,
+            onRescan = {
+                duplicateScanInProgress = true
+                duplicateGroups = emptyList()
+                dragScope.launch {
+                    val tracksSnapshot = viewModel.playlistSnapshot()
+                    duplicateGroups = withContext(Dispatchers.Default) {
+                        TrackDuplicateDetector.findDuplicateGroups(tracksSnapshot)
+                    }
+                    duplicateScanInProgress = false
+                }
+            },
+            onDismiss = { showDuplicateCleanupDialog = false }
+        )
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(TrecBlack)
             .graphicsLayer { clip = false } // корневой контейнер без обрезки
     ) {
         Scaffold(
@@ -605,7 +678,7 @@ fun PlaylistEditorScreen(
                 PlaylistHeader(
                     title = if (isSystem) "Все треки" else playlistName,
                     count = displayTracks.size,
-                    color = viewModel.dominantColor,
+                    color = accent,
                     isSystem = isSystem,
                     isEditMode = isEditMode,
                     canEdit = sortOption == SortOption.CUSTOM,
@@ -615,8 +688,7 @@ fun PlaylistEditorScreen(
                     onPlay = {
                         if (displayTracks.isNotEmpty()) {
                             val track = displayTracks.first()
-                            val realIndex = rawTracks.indexOf(track)
-                            if (realIndex != -1) viewModel.playTrackFromPlaylist(playlistName, realIndex)
+                            viewModel.playTrackFromPlaylistByUri(playlistName, track.uri)
                         }
                     },
                     onShuffle = {
@@ -640,7 +712,8 @@ fun PlaylistEditorScreen(
                         }
                     },
                     onSelectFolder = if (isSystem) { { folderLauncher.launch(null) } } else null,
-                    onSortClick = { showSortDialog = true }
+                    onSortClick = { showSortDialog = true },
+                    onMoreClick = if (isSystem) { { showLibraryOptions = true } } else null
                 )
             }
         ) { padding ->
@@ -677,6 +750,7 @@ fun PlaylistEditorScreen(
 
                         draggingTrack = dragState.copy(
                             index = targetItem.index,
+                            key = trackListKey(moved.uri.toString(), targetItem.index),
                             itemOffset = IntOffset(0, targetItem.offset),
                             itemSize = IntSize(listSize.width, targetItem.size)
                         )
@@ -724,7 +798,7 @@ fun PlaylistEditorScreen(
                                         val track = localTracks[item.index]
                                         draggingTrack = ListDragState(
                                             index = item.index,
-                                            key = track.uri.toString(),
+                                            key = trackListKey(track.uri.toString(), item.index),
                                             itemOffset = IntOffset(0, item.offset),
                                             itemSize = IntSize(listSize.width, item.size)
                                         )
@@ -767,9 +841,10 @@ fun PlaylistEditorScreen(
                 ) {
                     itemsIndexed(
                         items = displayTracks,
-                        key = { _, track -> track.uri.toString() }
+                        key = { index, track -> trackListKey(track.uri.toString(), index) }
                     ) { index, track ->
-                        val isDragging = draggingTrack?.key == track.uri.toString()
+                        val rowKey = trackListKey(track.uri.toString(), index)
+                        val isDragging = draggingTrack?.key == rowKey
                         val wiggleDirection = if (index % 2 == 0) 1f else -1f
                         val wiggle = if (isEditMode && !isDragging && !isSystem && sortOption == SortOption.CUSTOM) {
                             Modifier.rotate(rotation * wiggleDirection)
@@ -778,9 +853,7 @@ fun PlaylistEditorScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .animateItemPlacement(
-                                    animationSpec = tween(300)
-                                )
+                                .animateItem()
                                 .zIndex(0f)
                                 .graphicsLayer {
                                     alpha = if (isDragging) 0f else 1f
@@ -796,8 +869,7 @@ fun PlaylistEditorScreen(
                                 isEditMode = isEditMode && !isDragging,
                                 onClick = {
                                     if (!isEditMode) {
-                                        val realIndex = rawTracks.indexOf(track)
-                                        if (realIndex != -1) viewModel.playTrackFromPlaylist(playlistName, realIndex)
+                                        viewModel.playTrackFromPlaylistByUri(playlistName, track.uri)
                                     }
                                 },
                                 onRemoveClick = { viewModel.removeTrackFromPlaylist(playlistName, track.uri.toString()) }
@@ -824,7 +896,7 @@ fun PlaylistEditorScreen(
 
         // Оверлей для перетаскиваемого трека (поверх всего, без обрезки)
         draggingTrack?.let { drag ->
-            val track = localTracks.firstOrNull { it.uri.toString() == drag.key } ?: return@let
+            val track = localTracks.getOrNull(drag.index) ?: return@let
             val widthDp = with(density) { listSize.width.toDp() }
             val heightDp = with(density) { drag.itemSize.height.toDp() }
             val offsetX = listOrigin.x
@@ -850,13 +922,13 @@ fun PlaylistEditorScreen(
                         .background(
                             Brush.horizontalGradient(
                                 listOf(
-                                    viewModel.dominantColor.copy(alpha = 0.16f + 0.10f * glow),
+                                    accent.copy(alpha = 0.16f + 0.10f * glow),
                                     Color.White.copy(alpha = 0.06f)
                                 )
                             ),
                             RoundedCornerShape(12.dp)
                         )
-                        .border(1.dp, viewModel.dominantColor.copy(alpha = 0.45f + 0.35f * glow), RoundedCornerShape(12.dp))
+                        .border(1.dp, accent.copy(alpha = 0.45f + 0.35f * glow), RoundedCornerShape(12.dp))
                         .graphicsLayer {
                             scaleX = 1.02f
                             scaleY = 1.02f
@@ -895,11 +967,13 @@ fun PlaylistHeader(
     onAdd: (() -> Unit)?,
     onToggleEdit: (() -> Unit)? = null,
     onSelectFolder: (() -> Unit)? = null,
-    onSortClick: () -> Unit
+    onSortClick: () -> Unit,
+    onMoreClick: (() -> Unit)? = null
 ) {
     var isSearchExpanded by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val accent = color.liquidAccent()
 
     LaunchedEffect(isSearchExpanded) {
         if (isSearchExpanded) {
@@ -915,7 +989,7 @@ fun PlaylistHeader(
         Modifier
             .fillMaxWidth()
             .height(180.dp)
-            .background(Brush.verticalGradient(listOf(color.copy(alpha = 0.6f), Color.Transparent)))
+            .background(Brush.verticalGradient(listOf(accent.copy(alpha = 0.22f), Color.Transparent)))
             .graphicsLayer { clip = false }
     ) {
         Column(
@@ -949,9 +1023,7 @@ fun PlaylistHeader(
                             Modifier
                                 .fillMaxWidth()
                                 .height(46.dp)
-                                .clip(RoundedCornerShape(50))
-                                .background(Color.White.copy(0.15f))
-                                .border(1.dp, Color.White.copy(0.2f), RoundedCornerShape(50))
+                                .liquidGlassSurface(accent, RoundedCornerShape(50), fillAlpha = 0.08f)
                                 .padding(horizontal = 16.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -997,6 +1069,11 @@ fun PlaylistHeader(
                         if (onSelectFolder != null) {
                             IconButton(onClick = onSelectFolder) {
                                 Icon(Icons.Rounded.FolderOpen, null, tint = Color.White)
+                            }
+                        }
+                        if (onMoreClick != null) {
+                            IconButton(onClick = onMoreClick) {
+                                Icon(Icons.Rounded.MoreVert, null, tint = Color.White)
                             }
                         }
                         if (!isSystem && onToggleEdit != null) {
@@ -1046,7 +1123,7 @@ fun PlaylistHeader(
                         onClick = onShuffle,
                         modifier = Modifier
                             .size(48.dp)
-                            .background(Color.White.copy(0.1f), CircleShape)
+                            .liquidGlassSurface(accent, CircleShape, fillAlpha = 0.08f)
                     ) {
                         Icon(Icons.Rounded.Shuffle, null, tint = Color.White)
                     }
@@ -1066,6 +1143,338 @@ fun PlaylistHeader(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DuplicateCleanupDialog(
+    viewModel: MusicViewModel,
+    groups: List<DuplicateTrackGroup>,
+    isScanning: Boolean,
+    onRescan: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val accent = viewModel.dominantColor.liquidAccent()
+    val keepByGroup = remember(groups) {
+        mutableStateMapOf<String, String>().apply {
+            groups.forEach { group -> put(group.id, group.recommendedKeepUri) }
+        }
+    }
+    var pendingAction by remember { mutableStateOf<DuplicateCleanupAction?>(null) }
+
+    fun tracksToRemove(): List<TrecTrackEnhanced> {
+        return groups.flatMap { group ->
+            val keepUri = keepByGroup[group.id] ?: group.recommendedKeepUri
+            if (keepUri == DUPLICATE_GROUP_SKIP) return@flatMap emptyList()
+            group.items
+                .map { it.track }
+                .filterNot { it.uri.toString() == keepUri }
+        }.distinctBy { it.uri.toString() }
+    }
+
+    val removeTracks = tracksToRemove()
+
+    pendingAction?.let { action ->
+        GlassDialog(onDismiss = { pendingAction = null }) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                val isDelete = action == DuplicateCleanupAction.DELETE
+                Text(
+                    text = if (isDelete) "Удалить повторы?" else "Архивировать повторы?",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = if (isDelete) {
+                        "Будет удалено файлов навсегда: ${removeTracks.size}. Оставленные треки не трогаем."
+                    } else {
+                        "В архив уйдёт файлов: ${removeTracks.size}. Их можно будет вернуть из настроек."
+                    },
+                    color = Color.Gray,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(24.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    GlassTextButton("Отмена") { pendingAction = null }
+                    GlassButton(
+                        text = if (isDelete) "Удалить" else "В архив",
+                        onClick = {
+                            if (isDelete) {
+                                viewModel.deleteFilesFromDevice(context, removeTracks)
+                            } else {
+                                viewModel.archiveTracks(context, removeTracks)
+                            }
+                            pendingAction = null
+                            onDismiss()
+                        },
+                        color = accent,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+    }
+
+    GlassDialog(onDismiss = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 680.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Search, null, tint = accent, modifier = Modifier.size(30.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Повторы в библиотеке", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = when {
+                            isScanning -> "Сканирую названия, артистов, длительность и качество"
+                            groups.isEmpty() -> "Подозрительных дублей не найдено"
+                            else -> "${groups.size} групп · лишних файлов: ${removeTracks.size}"
+                        },
+                        color = Color.Gray,
+                        fontSize = 13.sp
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, null, tint = Color.White.copy(alpha = 0.72f))
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            when {
+                isScanning -> {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(260.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = accent)
+                            Spacer(Modifier.height(16.dp))
+                            Text("Ищу похожие треки...", color = Color.White.copy(alpha = 0.75f))
+                        }
+                    }
+                }
+                groups.isEmpty() -> {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(260.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Rounded.TaskAlt, null, tint = Color.White.copy(alpha = 0.28f), modifier = Modifier.size(64.dp))
+                            Spacer(Modifier.height(12.dp))
+                            Text("Всё чисто", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Я не нашёл достаточно похожих файлов, чтобы предлагать удаление.",
+                                color = Color.Gray,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    GlassButton("Сканировать снова", onRescan, accent, Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    GlassTextButton("Закрыть", onDismiss)
+                }
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 460.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(
+                            items = groups,
+                            key = { it.id }
+                        ) { group ->
+                            val keepUri = keepByGroup[group.id] ?: group.recommendedKeepUri
+                            DuplicateGroupCard(
+                                group = group,
+                                keepUri = keepUri,
+                                skipped = keepUri == DUPLICATE_GROUP_SKIP,
+                                accent = accent,
+                                onKeepChange = { keepByGroup[group.id] = it },
+                                onSkipToggle = {
+                                    keepByGroup[group.id] = if (keepUri == DUPLICATE_GROUP_SKIP) {
+                                        group.recommendedKeepUri
+                                    } else {
+                                        DUPLICATE_GROUP_SKIP
+                                    }
+                                }
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        GlassButton(
+                            text = "В архив (${removeTracks.size})",
+                            onClick = { if (removeTracks.isNotEmpty()) pendingAction = DuplicateCleanupAction.ARCHIVE },
+                            color = accent,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(
+                            onClick = { if (removeTracks.isNotEmpty()) pendingAction = DuplicateCleanupAction.DELETE },
+                            modifier = Modifier
+                                .height(50.dp)
+                                .weight(1f)
+                        ) {
+                            Text("Удалить", color = accent, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    GlassTextButton("Закрыть", onDismiss)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DuplicateGroupCard(
+    group: DuplicateTrackGroup,
+    keepUri: String,
+    skipped: Boolean,
+    accent: Color,
+    onKeepChange: (String) -> Unit,
+    onSkipToggle: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(if (skipped) Color.White.copy(alpha = 0.025f) else Color.White.copy(alpha = 0.055f))
+            .border(
+                1.dp,
+                if (skipped) Color.White.copy(alpha = 0.06f) else Color.White.copy(alpha = 0.10f),
+                RoundedCornerShape(22.dp)
+            )
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    if (skipped) "Группа пропущена" else "Похоже на один трек",
+                    color = if (skipped) Color.White.copy(alpha = 0.58f) else Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
+                Text(group.reason, color = Color.White.copy(alpha = 0.56f), fontSize = 12.sp)
+            }
+            Text(
+                "${(group.confidence * 100f).roundToInt()}%",
+                color = accent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onSkipToggle) {
+                Text(
+                    if (skipped) "Вернуть в чистку" else "Не трогать группу",
+                    color = if (skipped) Color.White.copy(alpha = 0.68f) else accent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(Modifier.height(4.dp))
+
+        group.items.forEach { item ->
+            DuplicateTrackChoiceRow(
+                item = item,
+                selected = !skipped && item.track.uri.toString() == keepUri,
+                skipped = skipped,
+                accent = accent,
+                onClick = { onKeepChange(item.track.uri.toString()) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun DuplicateTrackChoiceRow(
+    item: com.trec.music.utils.DuplicateTrackItem,
+    selected: Boolean,
+    skipped: Boolean,
+    accent: Color,
+    onClick: () -> Unit
+) {
+    val track = item.track
+    val pathName = track.path
+        ?: track.uri.lastPathSegment
+        ?: ""
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) accent.copy(alpha = 0.15f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .alpha(if (skipped) 0.62f else 1f)
+            .padding(vertical = 8.dp, horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onClick,
+            colors = RadioButtonDefaults.colors(
+                selectedColor = accent,
+                unselectedColor = Color.White.copy(alpha = 0.42f)
+            )
+        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = track.title,
+                color = Color.White,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 14.sp
+            )
+            Text(
+                text = track.getDisplayArtist(),
+                color = Color.White.copy(alpha = 0.58f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 12.sp
+            )
+            Text(
+                text = listOf(
+                    track.getFormattedDuration().takeIf { track.durationMs > 0L },
+                    item.qualityLabel,
+                    pathName.substringAfterLast('/').takeIf { it.isNotBlank() }
+                ).filterNotNull().joinToString(" · "),
+                color = Color.White.copy(alpha = 0.38f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 11.sp
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = when {
+                skipped -> "Не трогаем"
+                selected -> "Оставить"
+                else -> "Лишний"
+            },
+            color = if (selected) accent else Color.White.copy(alpha = 0.45f),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
@@ -1138,10 +1547,10 @@ fun TrackPickerSheet(viewModel: MusicViewModel, currentPlaylist: String, onDismi
                         }
                     }
                 }
-                items(
+                itemsIndexed(
                     items = tracksToShow,
-                    key = { it.uri.toString() } // <-- Обязательный ключ для плавной фильтрации
-                ) { track ->
+                    key = { index, track -> trackListKey(track.uri.toString(), index) }
+                ) { _, track ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

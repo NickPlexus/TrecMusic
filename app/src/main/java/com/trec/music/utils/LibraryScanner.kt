@@ -122,22 +122,24 @@ object LibraryScanner {
         }
 
         // Запрашиваем ВСЕ доступные поля из MediaStore
-        val projection = arrayOf(
-            MediaStore.Audio.Media._ID,
-            MediaStore.Audio.Media.TITLE,
-            MediaStore.Audio.Media.ARTIST,
-            MediaStore.Audio.Media.ALBUM,
-            MediaStore.Audio.Media.ALBUM_ARTIST,
-            MediaStore.Audio.Media.GENRE,
-            MediaStore.Audio.Media.COMPOSER,
-            MediaStore.Audio.Media.YEAR,
-            MediaStore.Audio.Media.TRACK,
-            MediaStore.Audio.Media.DURATION,
-            MediaStore.Audio.Media.SIZE,
-            MediaStore.Audio.Media.DATE_ADDED,
-            MediaStore.Audio.Media.DATE_MODIFIED,
-            MediaStore.Audio.Media.MIME_TYPE
-        )
+        val projection = buildList {
+            add(MediaStore.Audio.Media._ID)
+            add(MediaStore.Audio.Media.TITLE)
+            add(MediaStore.Audio.Media.ARTIST)
+            add(MediaStore.Audio.Media.ALBUM)
+            add(MediaStore.Audio.Media.ALBUM_ARTIST)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                add(MediaStore.Audio.Media.GENRE)
+            }
+            add(MediaStore.Audio.Media.COMPOSER)
+            add(MediaStore.Audio.Media.YEAR)
+            add(MediaStore.Audio.Media.TRACK)
+            add(MediaStore.Audio.Media.DURATION)
+            add(MediaStore.Audio.Media.SIZE)
+            add(MediaStore.Audio.Media.DATE_ADDED)
+            add(MediaStore.Audio.Media.DATE_MODIFIED)
+            add(MediaStore.Audio.Media.MIME_TYPE)
+        }.toTypedArray()
 
         // Фильтр: только музыка, длительность > 30 секунд (исключаем рингтоны)
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.DURATION} > 30000"
@@ -155,7 +157,11 @@ object LibraryScanner {
                 val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
                 val albumCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
                 val albumArtistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ARTIST)
-                val genreCol = cursor.getColumnIndex(MediaStore.Audio.Media.GENRE)
+                val genreCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    cursor.getColumnIndex(MediaStore.Audio.Media.GENRE)
+                } else {
+                    -1
+                }
                 val composerCol = cursor.getColumnIndex(MediaStore.Audio.Media.COMPOSER)
                 val yearCol = cursor.getColumnIndex(MediaStore.Audio.Media.YEAR)
                 val trackCol = cursor.getColumnIndex(MediaStore.Audio.Media.TRACK)
@@ -171,16 +177,14 @@ object LibraryScanner {
 
                     val id = cursor.getLong(idCol)
                     val contentUri = ContentUris.withAppendedId(collection, id)                    // Получаем базовые данные из MediaStore (без тяжелого retriever в цикле)
-                    val title = cursor.getString(titleCol)?.takeIf { it.isNotBlank() } ?: "Unknown Track"
+                    val rawTitle = TrackMetadataText.normalizeValue(cursor.getString(titleCol)) ?: "Unknown Track"
+                    val (parsedArtist, parsedTitle) = TrackMetadataText.inferArtistAndTitle(rawTitle)
 
-                    val artist = cursor.getString(artistCol)?.takeIf {
-                        it.isNotBlank() && !it.contains("<unknown>", true)
-                    }
-
-                    val album = cursor.getString(albumCol)?.takeIf { it.isNotBlank() }
-                    val albumArtist = cursor.getString(albumArtistCol)?.takeIf { it.isNotBlank() }
-                    val genre = if (genreCol != -1) cursor.getString(genreCol)?.takeIf { it.isNotBlank() } else null
-                    val composer = cursor.getString(composerCol)?.takeIf { it.isNotBlank() }
+                    val artist = TrackMetadataText.normalizeValue(cursor.getString(artistCol)) ?: parsedArtist
+                    val album = TrackMetadataText.normalizeValue(cursor.getString(albumCol))
+                    val albumArtist = TrackMetadataText.normalizeValue(cursor.getString(albumArtistCol))
+                    val genre = if (genreCol != -1) TrackMetadataText.normalizeValue(cursor.getString(genreCol)) else null
+                    val composer = TrackMetadataText.normalizeValue(cursor.getString(composerCol))
                     val year = if (yearCol != -1) cursor.getInt(yearCol).takeIf { it > 0 } else null
                     val trackNumber = if (trackCol != -1) cursor.getInt(trackCol).takeIf { it > 0 } else null
                     val duration = cursor.getLong(durCol)
@@ -191,7 +195,7 @@ object LibraryScanner {
 
                     tracks.add(TrecTrackEnhanced(
                         uri = contentUri,
-                        title = title,
+                        title = parsedTitle,
                         artist = artist,
                         album = album,
                         durationMs = duration,

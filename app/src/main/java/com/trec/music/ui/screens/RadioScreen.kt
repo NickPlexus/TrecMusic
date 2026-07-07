@@ -6,11 +6,13 @@ import android.media.AudioTrack
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,6 +38,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
@@ -45,7 +48,6 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SignalCellularConnectedNoInternet0Bar
-import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -65,9 +67,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -82,9 +87,12 @@ import com.trec.music.ui.components.GlassButton
 import com.trec.music.ui.components.GlassDialog
 import com.trec.music.ui.components.GlassTextButton
 import com.trec.music.ui.theme.TrecBlack
+import com.trec.music.ui.theme.liquidAccent
 import com.trec.music.ui.LocalBottomOverlayPadding
 import com.trec.music.viewmodel.RadioStation
 import com.trec.music.viewmodel.RadioViewModel
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.random.Random
 
 // --- ГЕНЕРАТОР БЕЛОГО ШУМА ---
@@ -144,14 +152,179 @@ fun Modifier.glassEffect(
 ) = this
     .clip(shape)
     .background(
-        Brush.linearGradient(
+        Brush.verticalGradient(
             colors = listOf(
-                accent.copy(alpha = alpha),
-                accent.copy(alpha = alpha * 0.3f)
+                Color.White.copy(alpha = alpha * 1.35f),
+                accent.liquidAccent().copy(alpha = alpha * 0.88f),
+                Color(0xFF05080B).copy(alpha = 0.42f + alpha * 0.45f)
             )
         )
     )
-    .border(1.dp, accent.copy(alpha = borderAlpha), shape)
+    .background(
+        Brush.radialGradient(
+            colors = listOf(
+                Color.White.copy(alpha = alpha * 0.78f),
+                accent.liquidAccent().copy(alpha = alpha * 0.36f),
+                Color.Transparent
+            )
+        )
+    )
+    .border(
+        1.dp,
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.34f + borderAlpha * 0.35f),
+                accent.liquidAccent().copy(alpha = borderAlpha * 1.05f),
+                Color.White.copy(alpha = 0.08f + borderAlpha * 0.22f)
+            )
+        ),
+        shape
+    )
+
+@Composable
+private fun RadioAmbientBackground(
+    accent: Color,
+    station: RadioStation?,
+    isPlaying: Boolean,
+    isTuning: Boolean
+) {
+    val transition = rememberInfiniteTransition(label = "radioAmbient")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(if (isPlaying || isTuning) 12500 else 22000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "radioAmbientPhase"
+    )
+    val sweep by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(if (isPlaying || isTuning) 4200 else 7600, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "radioSweepPhase"
+    )
+
+    val liquid = accent.liquidAccent()
+    val secondary = remember(station?.id, liquid) { radioStationAccent(station, liquid) }
+    val energy = when {
+        isTuning -> 1.08f
+        isPlaying -> 0.92f
+        else -> 0.58f
+    }
+
+    Canvas(Modifier.fillMaxSize()) {
+        drawRect(
+            brush = Brush.verticalGradient(
+                listOf(
+                    lerp(TrecBlack, liquid, 0.07f),
+                    Color(0xFF05080B),
+                    Color.Black
+                )
+            )
+        )
+
+        val w = size.width
+        val h = size.height
+        val maxR = maxOf(w, h)
+        val driftA = Offset(
+            w * (0.18f + 0.11f * cos(phase * 6.2831855f)),
+            h * (0.12f + 0.08f * sin(phase * 5.1f))
+        )
+        val driftB = Offset(
+            w * (0.76f + 0.10f * sin(phase * 4.7f)),
+            h * (0.48f + 0.11f * cos(phase * 5.6f))
+        )
+
+        drawCircle(
+            brush = Brush.radialGradient(
+                listOf(
+                    liquid.copy(alpha = 0.22f * energy),
+                    secondary.copy(alpha = 0.070f * energy),
+                    Color.Transparent
+                ),
+                center = driftA,
+                radius = maxR * 0.72f
+            ),
+            center = driftA,
+            radius = maxR * 0.72f
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                listOf(
+                    secondary.copy(alpha = 0.16f * energy),
+                    liquid.copy(alpha = 0.045f * energy),
+                    Color.Transparent
+                ),
+                center = driftB,
+                radius = maxR * 0.64f
+            ),
+            center = driftB,
+            radius = maxR * 0.64f
+        )
+
+        val tower = Offset(w * 0.82f, h * 0.22f)
+        repeat(6) { i ->
+            val local = ((sweep + i / 6f) % 1f)
+            val eased = local * local * (3f - 2f * local)
+            val radius = maxR * (0.10f + eased * 0.74f)
+            val alpha = (1f - eased) * (0.070f + if (isTuning) 0.060f else 0f) * energy
+            drawCircle(
+                color = secondary.copy(alpha = alpha),
+                center = tower,
+                radius = radius,
+                style = Stroke(width = 1.2f + (1f - eased) * 4.6f)
+            )
+        }
+
+        repeat(7) { i ->
+            val y = h * (0.20f + i * 0.105f + sin(phase * 6.2831855f + i) * 0.010f)
+            val alpha = (0.018f + i * 0.002f) * energy
+            drawLine(
+                brush = Brush.horizontalGradient(
+                    listOf(
+                        Color.Transparent,
+                        liquid.copy(alpha = alpha),
+                        secondary.copy(alpha = alpha * 1.55f),
+                        Color.Transparent
+                    )
+                ),
+                start = Offset(0f, y),
+                end = Offset(w, y + sin(phase * 4f + i) * h * 0.028f),
+                strokeWidth = 1.1f + i * 0.18f
+            )
+        }
+
+        if (isTuning) {
+            repeat(16) { i ->
+                val y = h * ((phase * 1.8f + i * 0.071f) % 1f)
+                drawLine(
+                    color = Color.White.copy(alpha = 0.018f),
+                    start = Offset(0f, y),
+                    end = Offset(w, y),
+                    strokeWidth = 1f
+                )
+            }
+        }
+    }
+}
+
+private fun radioStationAccent(station: RadioStation?, fallback: Color): Color {
+    val palette = listOf(
+        Color(0xFF28E0D4),
+        Color(0xFF7A6CFF),
+        Color(0xFFFF4FA3),
+        Color(0xFFFFB84A),
+        Color(0xFF57D36B),
+        Color(0xFF45A7FF)
+    )
+    val key = station?.id ?: return lerp(fallback, Color(0xFF28E0D4), 0.45f)
+    val index = kotlin.math.abs(key.hashCode()) % palette.size
+    return lerp(fallback, palette[index], 0.62f)
+}
 
 @Composable
 fun RadioScreen() {
@@ -213,15 +386,11 @@ fun RadioScreen() {
             .fillMaxSize()
             .background(TrecBlack)
     ) {
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(MaterialTheme.colorScheme.primary.copy(alpha = 0.20f), Color.Transparent),
-                        radius = 900f
-                    )
-                )
+        RadioAmbientBackground(
+            accent = accent,
+            station = currentStation,
+            isPlaying = viewModel.isPlaying,
+            isTuning = isNoise || isLoading
         )
 
         Column(
@@ -271,13 +440,13 @@ fun RadioScreen() {
                     focusedBorderColor = Color.Transparent,
                     unfocusedBorderColor = Color.Transparent,
                     cursorColor = MaterialTheme.colorScheme.primary,
-                    focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                    unfocusedContainerColor = Color.White.copy(alpha = 0.04f)
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent
                 ),
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(16.dp)),
+                    .glassEffect(accent, RoundedCornerShape(16.dp), alpha = 0.070f, borderAlpha = 0.16f),
                 singleLine = true
             )
 
@@ -401,9 +570,9 @@ private fun HeaderRow(
                 "TREC RADIO",
                 fontSize = 32.sp,
                 fontWeight = FontWeight.ExtraBold,
-                color = MaterialTheme.colorScheme.primary   // красный заголовок
+                color = MaterialTheme.colorScheme.primary.liquidAccent()
             )
-            Text("Интернет‑эфир", fontSize = 16.sp, color = Color.White.copy(0.6f))
+            Text("Интернет‑эфир", fontSize = 16.sp, color = Color.White.copy(0.64f))
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -411,17 +580,20 @@ private fun HeaderRow(
                 onClick = onToggleEdit,
                 modifier = Modifier
                     .size(42.dp)
-                    .clip(CircleShape)
-                    .background(if (isEditMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f))
+                    .glassEffect(
+                        MaterialTheme.colorScheme.primary,
+                        CircleShape,
+                        alpha = if (isEditMode) 0.18f else 0.075f,
+                        borderAlpha = if (isEditMode) 0.38f else 0.16f
+                    )
             ) {
-                Icon(Icons.Rounded.Edit, null, tint = if (isEditMode) MaterialTheme.colorScheme.primary else Color.White.copy(0.7f))
+                Icon(Icons.Rounded.Edit, null, tint = if (isEditMode) MaterialTheme.colorScheme.primary.liquidAccent() else Color.White.copy(0.76f))
             }
             IconButton(
                 onClick = onAddStation,
                 modifier = Modifier
                     .size(42.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                    .glassEffect(MaterialTheme.colorScheme.primary, CircleShape, alpha = 0.18f, borderAlpha = 0.32f)
             ) {
                 Icon(Icons.Rounded.Add, null, tint = Color.White)
             }
@@ -429,8 +601,7 @@ private fun HeaderRow(
                 onClick = onInfo,
                 modifier = Modifier
                     .size(42.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.06f))
+                    .glassEffect(MaterialTheme.colorScheme.primary, CircleShape, alpha = 0.070f, borderAlpha = 0.14f)
             ) {
                 Icon(Icons.Rounded.Info, null, tint = Color.White.copy(0.8f))
             }
@@ -541,7 +712,26 @@ private fun NowPlayingGlassCard(
                         modifier = Modifier
                             .size(54.dp)
                             .clip(CircleShape)
-                            .background(if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                            .background(
+                                Brush.radialGradient(
+                                    listOf(
+                                        Color.White.copy(alpha = if (isActive) 0.34f else 0.12f),
+                                        MaterialTheme.colorScheme.primary.liquidAccent().copy(alpha = if (isActive) 0.95f else 0.22f),
+                                        Color(0xFF05080B).copy(alpha = if (isActive) 0.18f else 0.34f)
+                                    )
+                                )
+                            )
+                            .border(
+                                1.dp,
+                                Brush.linearGradient(
+                                    listOf(
+                                        Color.White.copy(alpha = 0.52f),
+                                        MaterialTheme.colorScheme.primary.liquidAccent().copy(alpha = 0.36f),
+                                        Color.White.copy(alpha = 0.16f)
+                                    )
+                                ),
+                                CircleShape
+                            )
                             .clickable { if (isUnavailable) onRetry() else onPlayPause() },
                         contentAlignment = Alignment.Center
                     ) {
@@ -655,7 +845,7 @@ private fun GlassRadioStationCard(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Icon(
-                            Icons.Rounded.VolumeUp,
+                            Icons.AutoMirrored.Rounded.VolumeUp,
                             null,
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(14.dp)
@@ -745,9 +935,15 @@ private fun GlassRadioStationRow(
                         .size(44.dp)
                         .clip(CircleShape)
                         .background(
-                            if (isSelected && state == StationState.PLAYING) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                        ),
+                            Brush.radialGradient(
+                                listOf(
+                                    Color.White.copy(alpha = if (isSelected && state == StationState.PLAYING) 0.30f else 0.10f),
+                                    MaterialTheme.colorScheme.primary.liquidAccent().copy(alpha = if (isSelected && state == StationState.PLAYING) 0.88f else 0.18f),
+                                    Color(0xFF05080B).copy(alpha = 0.34f)
+                                )
+                            )
+                        )
+                        .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     when (state) {
@@ -784,8 +980,26 @@ private fun StationArt(station: RadioStation, size: Dp) {
         modifier = Modifier
             .size(size)
             .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
-            .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f), RoundedCornerShape(14.dp)),
+            .background(
+                Brush.radialGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.16f),
+                        MaterialTheme.colorScheme.primary.liquidAccent().copy(alpha = 0.14f),
+                        Color(0xFF05080B).copy(alpha = 0.34f)
+                    )
+                )
+            )
+            .border(
+                1.dp,
+                Brush.linearGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.28f),
+                        MaterialTheme.colorScheme.primary.liquidAccent().copy(alpha = 0.24f),
+                        Color.White.copy(alpha = 0.08f)
+                    )
+                ),
+                RoundedCornerShape(14.dp)
+            ),
         contentAlignment = Alignment.Center
     ) {
         if (station.iconUrl != null) {

@@ -1,4 +1,10 @@
 <resources>
     <string name="app_name">Trec Music</string>
     <string name="notification_channel_playback">TREC Playback</string>
+    <string name="notification_previous">Предыдущий трек</string>
+    <string name="notification_play_pause">Воспроизвести или поставить на паузу</string>
+    <string name="notification_next">Следующий трек</string>
+    <string name="notification_repeat">Повтор</string>
+    <string name="widget_refresh">Обновить виджет</string>
+    <string name="widget_shuffle">Случайный порядок</string>
 </resources>

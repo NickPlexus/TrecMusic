@@ -27,6 +27,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,10 +42,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.trec.music.data.TrecTrackEnhanced
+import com.trec.music.ui.theme.liquidAccent
 import com.trec.music.utils.formatTime
 import com.trec.music.viewmodel.MusicViewModel
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -75,7 +76,7 @@ fun TrackRow(
     onClick: () -> Unit = {}
 ) {
     val isPlaying = viewModel.currentTrackUri == track.uri
-    val color = if(isPlaying) viewModel.dominantColor else MaterialTheme.colorScheme.primary
+    val color = if(isPlaying) viewModel.dominantColor.liquidAccent() else MaterialTheme.colorScheme.primary
     var showMenu by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
@@ -115,6 +116,9 @@ fun TrackRow(
             viewModel = viewModel,
             onDismiss = { showMenu = false },
             onRemoveFromPlaylist = if (isSelectionMode) onRemoveClick else null,
+            onArchiveTrack = {
+                viewModel.archiveTrack(context, track)
+            },
             onDeleteFromDevice = {
                 viewModel.deleteFileFromDevice(context, track)
             }
@@ -179,7 +183,7 @@ fun TrackRow(
                     fontSize = 16.sp
                 )
                 Text(
-                    text = track.artist ?: "Неизвестный исполнитель",
+                    text = track.getDisplayArtist(),
                     color = Color.White.copy(0.5f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -214,14 +218,39 @@ fun TrackContextMenu(
     viewModel: MusicViewModel,
     onDismiss: () -> Unit,
     onRemoveFromPlaylist: (() -> Unit)?,
+    onArchiveTrack: () -> Unit,
     onDeleteFromDevice: () -> Unit
 ) {
     var showInfo by remember { mutableStateOf(false) }
     var showAddToPlaylist by remember { mutableStateOf(false) }
+    var showArchiveConfirm by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     if (showInfo) TrackInfoDialog(track, viewModel) { showInfo = false; onDismiss() }
     if (showAddToPlaylist) AddToPlaylistDialog(track, viewModel) { showAddToPlaylist = false; onDismiss() }
+
+    if (showArchiveConfirm) {
+        GlassDialog(onDismiss = { showArchiveConfirm = false }) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Архивировать трек?", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "Он исчезнет из библиотеки, избранного и плейлистов, но останется в архиве настроек.",
+                    color = Color.Gray,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+                Spacer(Modifier.height(24.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    GlassTextButton("Отмена") { showArchiveConfirm = false }
+                    GlassButton("В архив", {
+                        onArchiveTrack()
+                        showArchiveConfirm = false
+                        onDismiss()
+                    }, MaterialTheme.colorScheme.primary, Modifier.weight(1f))
+                }
+            }
+        }
+    }
 
     if (showDeleteConfirm) {
         GlassDialog(onDismiss = { showDeleteConfirm = false }) {
@@ -242,7 +271,7 @@ fun TrackContextMenu(
     }
 
     // Главное меню
-    if (!showInfo && !showAddToPlaylist && !showDeleteConfirm) {
+    if (!showInfo && !showAddToPlaylist && !showArchiveConfirm && !showDeleteConfirm) {
         GlassDialog(onDismiss = onDismiss) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
@@ -254,7 +283,7 @@ fun TrackContextMenu(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = track.artist ?: "Неизвестный исполнитель",
+                    text = track.getDisplayArtist(),
                     color = Color.Gray,
                     fontSize = 14.sp,
                     maxLines = 1
@@ -262,7 +291,7 @@ fun TrackContextMenu(
                 Spacer(Modifier.height(24.dp))
 
                 // Кнопки действий
-                GlassButton("Информация", { showInfo = true }, viewModel.dominantColor, Modifier.fillMaxWidth())
+                GlassButton("Информация", { showInfo = true }, viewModel.dominantColor.liquidAccent(), Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
 
                 GlassButton("Добавить в плейлист...", { showAddToPlaylist = true }, Color(0xFF333333), Modifier.fillMaxWidth())
@@ -276,6 +305,22 @@ fun TrackContextMenu(
                 }
 
                 Spacer(Modifier.height(24.dp))
+
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { showArchiveConfirm = true }
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Rounded.Archive, null, tint = Color.White.copy(0.72f), modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Архивировать", color = Color.White.copy(0.86f), fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(Modifier.height(8.dp))
 
                 // Деструктивное действие
                 Row(
@@ -302,10 +347,10 @@ fun TrackContextMenu(
 @Composable
 fun TrackInfoDialog(track: TrecTrackEnhanced, viewModel: MusicViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
-    val info by produceState(initialValue = mapOf("Загрузка..." to ""), key1 = track.uri) {
-        value = withContext(Dispatchers.IO) {
-            viewModel.getTrackMetadataForUri(context, track.uri)
-        }
+    var info by remember(track.uri) { mutableStateOf(mapOf("Загрузка..." to "")) }
+
+    LaunchedEffect(track.uri) {
+        info = withContext(Dispatchers.IO) { viewModel.getTrackMetadataForUri(context, track.uri) }
     }
 
     GlassDialog(onDismiss = onDismiss) {

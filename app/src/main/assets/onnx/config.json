@@ -1,0 +1,14 @@
+{
+  "n_fft": 4096,
+  "n_hop": 1024,
+  "nb_bins": 2049,
+  "sample_rate": 44100,
+  "sources": [
+    "vocals",
+    "drums",
+    "bass",
+    "other"
+  ],
+  "model": "umxl",
+  "note": "STFT magnitude -> model -> masked spectrogram -> ISTFT on device."
+}

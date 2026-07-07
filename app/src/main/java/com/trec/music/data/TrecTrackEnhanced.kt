@@ -17,7 +17,9 @@ package com.trec.music.data
 
 import android.net.Uri
 import android.os.Parcelable
+import com.trec.music.utils.TrackMetadataText
 import kotlinx.parcelize.Parcelize
+import java.util.Locale
 
 @Parcelize
 data class TrecTrackEnhanced(
@@ -46,21 +48,21 @@ data class TrecTrackEnhanced(
         val seconds = durationMs / 1000
         val minutes = seconds / 60
         val remainingSeconds = seconds % 60
-        return String.format("%02d:%02d", minutes, remainingSeconds)
+        return String.format(Locale.US, "%02d:%02d", minutes, remainingSeconds)
     }
     
     fun getFormattedFileSize(): String {
         val kb = fileSize / 1024.0
         val mb = kb / 1024.0
         return when {
-            mb >= 1.0 -> String.format("%.1f MB", mb)
-            kb >= 1.0 -> String.format("%.1f KB", kb)
+            mb >= 1.0 -> String.format(Locale.US, "%.1f MB", mb)
+            kb >= 1.0 -> String.format(Locale.US, "%.1f KB", kb)
             else -> "$fileSize B"
         }
     }
     
     fun getDisplayArtist(): String {
-        return artist ?: "Неизвестный исполнитель"
+        return TrackMetadataText.displayArtist(artist, albumArtist, title)
     }
     
     fun getDisplayAlbum(): String {

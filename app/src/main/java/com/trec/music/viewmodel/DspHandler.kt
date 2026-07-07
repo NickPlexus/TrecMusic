@@ -19,8 +19,9 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackParameters
 import com.trec.music.data.AudioPresets
 import com.trec.music.utils.AudioReverser
-import com.trec.music.utils.VocalRemoverEngine
+import com.trec.music.utils.UmxlVocalSeparatorEngine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -32,6 +33,7 @@ private const val TAG = "DspHandler"
 class DspHandler(private val vm: MusicViewModel) {
 
     private val processingMutex = Mutex()
+    private var vocalProcessingJob: Job? = null
 
     fun setupEqualizer(sessionId: Int) {
         try {
@@ -77,8 +79,20 @@ class DspHandler(private val vm: MusicViewModel) {
     }
 
     fun setSpeed(speed: Float) {
-        vm.playbackSpeed = speed
-        vm.player?.playbackParameters = PlaybackParameters(speed, vm.playbackPitch)
+        val safeSpeed = speed.coerceIn(0.1f, 4.0f)
+
+        // Важно: "как кассета/винил" = тональность меняется вместе со скоростью.
+        // Это то, что люди ожидают от "slowed" / "nightcore" и т.п.
+        val targetPitch = if (vm.isPitchFollowsSpeed) {
+            safeSpeed.coerceIn(0.1f, 4.0f)
+        } else {
+            // Pitch Lock: удерживаем тон на "нормальном" уровне независимо от темпа.
+            1.0f
+        }
+
+        vm.playbackSpeed = safeSpeed
+        vm.playbackPitch = targetPitch
+        vm.player?.playbackParameters = PlaybackParameters(safeSpeed, targetPitch)
     }
 
     fun setPitch(pitch: Float) {
@@ -108,61 +122,89 @@ class DspHandler(private val vm: MusicViewModel) {
 
         val uri = vm.normalTrackUri ?: vm.currentTrackUri ?: return
 
-        // Защита от двойного клика
-        if (vm.isVocalRemovalProcessing) return
+        val processingUri = vm.vocalRemovalProcessingUri
+        if (vm.isVocalRemovalProcessing && processingUri == uri.toString()) return
+
+        if (vocalProcessingJob?.isActive == true && processingUri != uri.toString()) {
+            vocalProcessingJob?.cancel()
+        }
 
         vm.backgroundGenJob?.cancel()
 
-        vm.viewModelScope.launch {
+        vocalProcessingJob = vm.viewModelScope.launch {
             vm.isVocalRemovalProcessing = true
+            vm.vocalRemovalProcessingUri = uri.toString()
+            vm.isInstrumentalReady = false
 
-
-            val instFile = File(context.cacheDir, "inst_${uri.toString().hashCode()}.wav")
-
-            val processingTrackUri = uri
-
-            val resultPath: String? = processingMutex.withLock {
-                try {
-                    if (instFile.exists() && instFile.length() > 1000) {
-                        // Файл уже есть в кэше
-                        instFile.absolutePath
-                    } else {
-                        val result = withContext(Dispatchers.IO) {
-                            VocalRemoverEngine.generateInstrumental(context, uri, instFile)
-                        }
-                        if (result.success) {
-                            calculateCacheSize(context)
-                            instFile.absolutePath
-                        } else {
-                            withContext(Dispatchers.Main) {
-                                Toast.makeText(context, "Vocal Remover: ${result.methodUsed}", Toast.LENGTH_SHORT).show()
-                                Toast.makeText(context, "Ошибка: ${result.error}", Toast.LENGTH_LONG).show()
-                            }
-                            null
-                        }
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    null
-                }
+            val sepFile = vm.getKaraokeCacheFileFor(uri, context)
+            val processingTrackUri = uri.toString()
+            val mode = if (vm.karaokeOutputMode == KaraokeOutputMode.ACAPELLA) {
+                UmxlVocalSeparatorEngine.OutputMode.ACAPELLA
+            } else {
+                UmxlVocalSeparatorEngine.OutputMode.INSTRUMENTAL
             }
 
-            vm.isVocalRemovalProcessing = false
+            try {
+                val resultPath: String? = processingMutex.withLock {
+                    try {
+                        if (sepFile.exists() && sepFile.length() > 1000) {
+                            // Файл уже есть в кэше
+                            sepFile.absolutePath
+                        } else {
+                            val result = withContext(Dispatchers.IO) {
+                                UmxlVocalSeparatorEngine.generateInstrumental(
+                                    context = context,
+                                    sourceUri = uri,
+                                    outputFile = sepFile,
+                                    outputMode = mode,
+                                    removalStrength = vm.karaokeRemovalStrength,
+                                    vocalBoost = vm.karaokeVocalBoost
+                                )
+                            }
 
-            if (resultPath != null) {
-                val currentPlaying = vm.normalTrackUri ?: vm.currentTrackUri
-                if (currentPlaying == processingTrackUri) {
-                    val resultFile = File(resultPath)
-                    if (resultFile.exists() && resultFile.length() > 1000) {
-                        vm.isInstrumentalReady = true
-                        switchToInstrumentalTrack(File(resultPath))
-                    } else {
-                        Log.w(TAG, "Instrumental file not ready or too small: $resultPath")
+                            if (result.success) {
+                                calculateCacheSize(context)
+                                sepFile.absolutePath
+                            } else {
+                                withContext(Dispatchers.Main) {
+                                    val label = (result.methodUsed.ifBlank { "Karaoke" })
+                                    Toast.makeText(context, label, Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Ошибка: ${result.error}", Toast.LENGTH_LONG).show()
+                                }
+                                null
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                         withContext(Dispatchers.Main) {
-                            Toast.makeText(context, "Инструментал еще не готов", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                context,
+                                "Ошибка AI-сепарации: ${e.message ?: "неизвестная ошибка"}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        null
+                    }
+                }
+
+                if (resultPath != null) {
+                    val currentPlaying = (vm.normalTrackUri ?: vm.currentTrackUri)?.toString()
+                    if (currentPlaying == processingTrackUri) {
+                        val resultFile = File(resultPath)
+                        if (resultFile.exists() && resultFile.length() > 1000) {
+                            vm.isInstrumentalReady = true
+                            switchToInstrumentalTrack(File(resultPath))
+                        } else {
+                            Log.w(TAG, "Instrumental file not ready or too small: $resultPath")
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Инструментал еще не готов", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
                 }
+            } finally {
+                vm.isVocalRemovalProcessing = false
+                vm.vocalRemovalProcessingUri = null
             }
         }
     }
@@ -295,21 +337,16 @@ class DspHandler(private val vm: MusicViewModel) {
         val tracksToUse = if (vm.currentPlaylistFilter != null)
             vm.libraryHandler.getPlaylistTracks(vm.currentPlaylistFilter!!)
         else
-            vm.playlist.toList()
+            vm.playlistSnapshot()
 
         val index = tracksToUse.indexOfFirst { it.uri == uri }
 
         if (index != -1) {
-            // ПРИМЕНЯЕМ ОПТИМИЗАЦИЮ ИЗ MusicViewModel (Окно в 20 треков)
-            val windowSize = 20
-            val endIndex = kotlin.math.min(index + windowSize, tracksToUse.size)
-            val windowTracks = tracksToUse.subList(index, endIndex)
-
-            val mediaItems = windowTracks.map { track ->
+            val mediaItems = tracksToUse.map { track ->
                 // Восстанавливаем ПОЛНЫЕ метаданные, чтобы UI не терял обложки и названия
                 val metadata = MediaMetadata.Builder()
                     .setTitle(track.title)
-                    .setArtist(track.artist)
+                    .setArtist(vm.getTrackArtist(track))
                     .setAlbumTitle(track.album)
                     .build()
 
@@ -319,9 +356,7 @@ class DspHandler(private val vm: MusicViewModel) {
                     .setMediaMetadata(metadata)
                     .build()
             }
-            vm.player?.setMediaItems(mediaItems)
-            // Мы передали subList, где текущий трек стоит первым (индекс 0)
-            vm.player?.seekTo(0, position)
+            vm.player?.setMediaItems(mediaItems, index, position)
         } else {
             // Фолбэк, если трека нет в списке
             val metadata = MediaMetadata.Builder()
@@ -343,7 +378,10 @@ class DspHandler(private val vm: MusicViewModel) {
 
     fun calculateCacheSize(context: Context) {
         vm.viewModelScope.launch(Dispatchers.IO) {
-            val files = context.cacheDir.listFiles { _, name -> (name.startsWith("rev_") || name.startsWith("inst_")) && name.endsWith(".wav") }
+            val files = context.cacheDir.listFiles { _, name ->
+                (name.startsWith("rev_") || name.startsWith("inst_") || name.startsWith("sep_umxl1_")) &&
+                    name.endsWith(".wav")
+            }
             val size = files?.sumOf { it.length() } ?: 0L
             withContext(Dispatchers.Main) { vm.reverseCacheSize = "${size / (1024*1024)} MB" }
         }
@@ -351,7 +389,10 @@ class DspHandler(private val vm: MusicViewModel) {
 
     fun clearReverseCache(context: Context) {
         vm.viewModelScope.launch(Dispatchers.IO) {
-            context.cacheDir.listFiles { _, name -> (name.startsWith("rev_") || name.startsWith("inst_")) && name.endsWith(".wav") }?.forEach { it.delete() }
+            context.cacheDir.listFiles { _, name ->
+                (name.startsWith("rev_") || name.startsWith("inst_") || name.startsWith("sep_umxl1_")) &&
+                    name.endsWith(".wav")
+            }?.forEach { it.delete() }
             withContext(Dispatchers.Main) {
                 calculateCacheSize(context)
                 vm.isReverseReady = false

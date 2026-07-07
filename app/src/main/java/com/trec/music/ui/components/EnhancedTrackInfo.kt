@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trec.music.data.TrecTrackEnhanced
+import com.trec.music.utils.TrackMetadataText
 
 @Composable
 fun EnhancedTrackInfo(
@@ -55,7 +56,7 @@ fun EnhancedTrackInfo(
             
             // Исполнитель
             track.getDisplayArtist().let { artist ->
-                if (artist != "Неизвестный исполнитель") {
+                if (TrackMetadataText.normalizeValue(artist) != null) {
                     Text(
                         text = "Исполнитель: $artist",
                         style = MaterialTheme.typography.bodyLarge,
@@ -260,7 +261,7 @@ fun CompactTrackInfo(
         )
         
         track.getDisplayArtist().let { artist ->
-            if (artist != "Неизвестный исполнитель") {
+            if (TrackMetadataText.normalizeValue(artist) != null) {
                 Text(
                     text = artist,
                     style = MaterialTheme.typography.bodySmall,

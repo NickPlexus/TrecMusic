@@ -52,10 +52,10 @@ class RadioViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _volume = mutableFloatStateOf(1.0f)
     var volume: Float
-        get() = _volume.value
+        get() = _volume.floatValue
         set(value) {
-            _volume.value = value.coerceIn(0f, 1f)
-            player?.volume = _volume.value
+            _volume.floatValue = value.coerceIn(0f, 1f)
+            player?.volume = _volume.floatValue
         }
 
     private val prefs = PrefsManager(application)

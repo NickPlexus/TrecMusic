@@ -13,6 +13,9 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import com.trec.music.PrefsManager
+import com.trec.music.SavedPlaybackState
+import com.trec.music.data.local.CachedTrackEntity
+import com.trec.music.data.local.TrecDatabase
 import com.trec.music.utils.LibraryScanner // ИМПОРТ ОБНОВЛЕН (теперь utils)
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -20,6 +23,7 @@ import kotlinx.coroutines.withContext
 class LibraryRepository(private val context: Context) {
 
     private val prefs = PrefsManager(context)
+    private val trackDao = TrecDatabase.get(context).cachedTrackDao()
 
     fun getSavedFolderUri(): String? = prefs.getFolderUri()
 
@@ -75,6 +79,16 @@ class LibraryRepository(private val context: Context) {
 
     fun saveFavorites(favs: Set<String>) = prefs.saveFavorites(favs)
 
+    fun getArchivedTracks(): List<TrecTrackEnhanced> = prefs.getArchivedTracks()
+
+    fun getArchivedTrackUris(): Set<String> = prefs.getArchivedTrackUris()
+
+    fun archiveTrack(track: TrecTrackEnhanced) = prefs.archiveTrack(track)
+
+    fun unarchiveTrack(uri: String) = prefs.unarchiveTrack(uri)
+
+    fun removeArchivedTrack(uri: String) = prefs.removeArchivedTrack(uri)
+
     fun getBlacklist(): Set<String> = prefs.getBlacklist()
 
     // --- State Saving ---
@@ -85,11 +99,40 @@ class LibraryRepository(private val context: Context) {
 
     fun getLastTrackPos(): Long = prefs.getLastTrackPos()
 
+    fun savePlaybackState(state: SavedPlaybackState) = prefs.savePlaybackState(state)
+
+    fun getPlaybackState(): SavedPlaybackState? = prefs.getPlaybackState()
+
+    fun clearPlaybackState() = prefs.clearPlaybackState()
+
     fun clearLibraryData() = prefs.clearFolder()
-    fun saveTrackCache(tracks: List<TrecTrackEnhanced>) = prefs.saveTrackCache(tracks)
 
-    fun getTrackCache(): List<TrecTrackEnhanced> = prefs.getTrackCache()
+    suspend fun saveTrackCache(tracks: List<TrecTrackEnhanced>) = withContext(Dispatchers.IO) {
+        val unique = tracks.distinctBy { it.uri.toString() }
+        trackDao.replaceAll(unique.mapIndexed { index, track ->
+            CachedTrackEntity.fromTrack(track, index)
+        })
 
-    fun clearTrackCache() = prefs.clearTrackCache()
+        // Пока оставляем старый JSON как резервный слой для отката/миграции.
+        prefs.saveTrackCache(unique)
+    }
+
+    suspend fun getTrackCache(): List<TrecTrackEnhanced> = withContext(Dispatchers.IO) {
+        val roomTracks = trackDao.getTracks().map { it.toTrack() }
+        if (roomTracks.isNotEmpty()) return@withContext roomTracks
+
+        val legacyTracks = prefs.getTrackCache().distinctBy { it.uri.toString() }
+        if (legacyTracks.isNotEmpty()) {
+            trackDao.replaceAll(legacyTracks.mapIndexed { index, track ->
+                CachedTrackEntity.fromTrack(track, index)
+            })
+        }
+        legacyTracks
+    }
+
+    suspend fun clearTrackCache() = withContext(Dispatchers.IO) {
+        trackDao.clear()
+        prefs.clearTrackCache()
+    }
 }
 

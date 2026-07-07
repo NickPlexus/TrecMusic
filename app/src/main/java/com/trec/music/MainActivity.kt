@@ -101,7 +101,7 @@ fun MainAppStructure() {
         }
     }
 
-    var hasPermissions by remember { mutableStateOf(false) }
+    var hasPermissions by remember { mutableStateOf<Boolean?>(null) }
 
     // Базовое разрешение для работы плеера/библиотеки.
     // Важно: микрофон НЕ запрашиваем на старте, потому что "Диктофон" — опциональный модуль.
@@ -117,7 +117,7 @@ fun MainAppStructure() {
         hasPermissions = requiredPermissions.all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
-        if (hasPermissions) musicViewModel.initialize()
+        if (hasPermissions == true) musicViewModel.initialize()
     }
 
     // Уведомления (Android 13+): нужны для стабильного фонового воспроизведения (MediaSessionService).
@@ -132,12 +132,12 @@ fun MainAppStructure() {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
 
-        if (!hasPermissions) launcher.launch(requiredPermissions)
+        if (hasPermissions != true) launcher.launch(requiredPermissions)
         else musicViewModel.initialize()
     }
 
     LaunchedEffect(hasPermissions) {
-        if (!hasPermissions) return@LaunchedEffect
+        if (hasPermissions != true) return@LaunchedEffect
         if (askedNotifications) return@LaunchedEffect
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -182,15 +182,18 @@ fun MainAppStructure() {
 
     // Это значение используют scroll‑контейнеры экранов, чтобы контент НЕ уходил под нижнюю навигацию/мини‑плееры.
     val bottomOverlayPadding =
-        if (!hasPermissions) 0.dp
+        if (hasPermissions != true) 0.dp
         else if (showFullPlayer) 0.dp
         else bottomNavHeight +
                 (if (hasTrackMini) miniPlayerHeight else 0.dp) +
                 (if (hasRecordingMini) miniPlayerHeight else 0.dp) +
                 (if (hasTrackMini && hasRecordingMini) miniPlayerGap else 0.dp)
 
+    val contentViewportBottomPadding =
+        if (hasPermissions == true && !showFullPlayer) bottomOverlayPadding else 0.dp
+
     TrecMusicTheme(accentColor = musicViewModel.dominantColor) {
-        CompositionLocalProvider(LocalBottomOverlayPadding provides bottomOverlayPadding) {
+        CompositionLocalProvider(LocalBottomOverlayPadding provides 0.dp) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -250,8 +253,12 @@ fun MainAppStructure() {
                 }
 
                 // СЛОЙ 1: КОНТЕНТ (NavHost)
-                Box(modifier = Modifier.fillMaxSize()) {
-                    if (hasPermissions) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = contentViewportBottomPadding)
+                ) {
+                    if (hasPermissions == true) {
                         NavHost(
                             navController = navController,
                             startDestination = "home",
@@ -272,7 +279,7 @@ fun MainAppStructure() {
                             composable("privacy") { LegalScreen(LegalType.PRIVACY) { navController.popBackStack() } }
                             composable("terms") { LegalScreen(LegalType.TERMS) { navController.popBackStack() } }
                         }
-                    } else {
+                    } else if (hasPermissions == false) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("Нужен доступ к музыке", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
@@ -292,11 +299,15 @@ fun MainAppStructure() {
                                 }
                             }
                         }
+                    } else {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = musicViewModel.dominantColor)
+                        }
                     }
                 }
 
                 // СЛОЙ 2: UI (Навигация и Плеер)
-                if (!showFullPlayer && hasPermissions) {
+                if (!showFullPlayer && hasPermissions == true) {
                     // Навигация (внизу)
                     Box(
                         modifier = Modifier

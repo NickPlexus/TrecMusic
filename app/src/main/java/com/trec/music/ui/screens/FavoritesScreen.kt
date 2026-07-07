@@ -36,25 +36,26 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.trec.music.ui.components.TrackRow
 import com.trec.music.ui.LocalBottomOverlayPadding
+import com.trec.music.ui.theme.liquidAccent
 import com.trec.music.viewmodel.MusicViewModel
+
+private fun favoriteTrackKey(uri: String, index: Int): String = "$uri#$index"
 
 @Composable
 fun FavoritesScreen(viewModel: MusicViewModel) {
     val scrollState = rememberLazyListState()
     val bottomOverlay = LocalBottomOverlayPadding.current
 
-    // Умная фильтрация
-    val favTracks by remember(viewModel.playlist, viewModel.favoriteTracks) {
-        derivedStateOf {
-            viewModel.playlist
-                .filter { viewModel.favoriteTracks.contains(it.uri.toString()) }
-                .distinctBy { it.uri.toString() }
-        }
+    val favoriteUris = viewModel.favoriteTracksSnapshot()
+    val favTracks = remember(viewModel.playlistUpdateTrigger, favoriteUris) {
+        viewModel.playlistSnapshot()
+            .filter { favoriteUris.contains(it.uri.toString()) }
+            .distinctBy { it.uri.toString() }
     }
 
     // Анимированный фон
     val animatedColor by animateColorAsState(
-        targetValue = viewModel.dominantColor,
+        targetValue = viewModel.dominantColor.liquidAccent(),
         animationSpec = tween(1000),
         label = "HeaderColor"
     )
@@ -154,7 +155,7 @@ fun FavoritesScreen(viewModel: MusicViewModel) {
                 // --- LIST ---
                 itemsIndexed(
                     items = favTracks,
-                    key = { _, track -> track.uri.toString() }
+                    key = { index, track -> favoriteTrackKey(track.uri.toString(), index) }
                 ) { index, track ->
                     // Анимация появления
                     AnimatedVisibility(
@@ -167,10 +168,7 @@ fun FavoritesScreen(viewModel: MusicViewModel) {
                             index = -1,
                             viewModel = viewModel,
                             onClick = {
-                                val indexInMain = viewModel.playlist.indexOfFirst { it.uri == track.uri }
-                                if (indexInMain != -1) {
-                                    viewModel.playFromFavorites(favTracks, indexInMain)
-                                }
+                                viewModel.playFromFavorites(favTracks, index)
                             }
                         )
                     }

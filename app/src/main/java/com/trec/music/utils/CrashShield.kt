@@ -1,11 +1,8 @@
 package com.trec.music.utils
 
 import android.app.ActivityManager
-import android.app.AlarmManager
 import android.app.Application
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
 import android.os.Build
 import android.os.Process
 import java.io.PrintWriter
@@ -22,7 +19,7 @@ object CrashShield {
     // чтобы хватило места записать отчёт о крашe
     private var memoryReserve: ByteArray? = ByteArray(512 * 1024)
 
-    fun install(app: Application, restartIntent: Intent) {
+    fun install(app: Application) {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
 
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
@@ -43,25 +40,10 @@ object CrashShield {
                 // Если даже запись упала — не падаем повторно
             }
 
-            // Перезапуск приложения через 350 мс
             try {
-                val pendingIntent = PendingIntent.getActivity(
-                    app,
-                    9911,
-                    restartIntent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                    ),
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                )
-                val alarmManager = app.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-                alarmManager.setExact(
-                    AlarmManager.RTC,
-                    System.currentTimeMillis() + 350L,
-                    pendingIntent
-                )
-            } catch (_: Throwable) {}
-
-            previous?.uncaughtException(thread, error)
+                previous?.uncaughtException(thread, error)
+            } catch (_: Throwable) {
+            }
             Process.killProcess(Process.myPid())
             exitProcess(10)
         }

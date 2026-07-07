@@ -18,3 +18,18 @@ local.properties
 /.tmp_media3/
 /.android/
 /.home/
+tools/*.class
+
+# Build artifacts / packaged outputs (too large + regenerable)
+*.apk
+*.aab
+*.idsig
+
+# Large ML model — exceeds GitHub 100MB file limit; obtain separately (see tools/DownloadFile.java)
+/app/src/main/assets/onnx/*.onnx
+
+# Generated QA audio fixtures
+/tools/qa-audio/
+
+# Remote agent attachments
+/.codex-remote-attachments/
